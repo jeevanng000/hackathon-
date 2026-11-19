@@ -610,7 +610,7 @@ test('HTTP API enforces stale-patch 409 rejection, append-only audit routes, API
     });
     assert.equal(disabledAsk.status, 503);
 
-    // E. Request validation rejects invalid projectId, invalid entityId, and oversized request (413)
+    // E. Request validation rejects invalid projectId, invalid entityId, empty queries, and oversized request (413)
     process.env.GRAPHRAG_ENABLED = 'true';
     const badProj = await fetch(`${srv.baseUrl}/api/graphrag/status/..%2Fevil`);
     assert.equal(badProj.status, 400);
@@ -621,6 +621,23 @@ test('HTTP API enforces stale-patch 409 rejection, append-only audit routes, API
       body: JSON.stringify({ projectId: 'autopatch-core', targetId: 'bad\x00id' }),
     });
     assert.equal(badEntity.status, 400);
+
+    const badRootCause = await fetch(`${srv.baseUrl}/api/graphrag/root-cause`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: 'autopatch-core' }),
+    });
+    assert.equal(badRootCause.status, 400);
+
+    const badHist = await fetch(`${srv.baseUrl}/api/graphrag/historical-search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: 'autopatch-core', query: '   ' }),
+    });
+    assert.equal(badHist.status, 400);
+
+    const badGraphProj = await fetch(`${srv.baseUrl}/api/graphrag/graph/..%2Fevil`);
+    assert.equal(badGraphProj.status, 400);
 
     const oversized = await fetch(`${srv.baseUrl}/api/graphrag/ask`, {
       method: 'POST',

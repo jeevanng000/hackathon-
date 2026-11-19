@@ -482,10 +482,14 @@ test('Audio payload validator enforces MIME allowlist, base64 syntax, and byte l
 test('HTTP API enforces health, input validation, path traversal, 400/413, forged baseline rejection, and rate limiting', async () => {
   const { baseUrl, close } = await startTestHttpServer();
   try {
-    // Health endpoint
+    // Health endpoint & iFrame-compatible security headers
     const healthRes = await fetch(`${baseUrl}/api/health`);
     assert.equal(healthRes.status, 200);
     assert.ok(healthRes.headers.get('x-request-id'));
+    assert.equal(healthRes.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(healthRes.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
+    assert.equal(healthRes.headers.get('cache-control'), 'no-store');
+    assert.equal(healthRes.headers.get('x-frame-options'), null);
     const health = (await healthRes.json()) as Record<string, unknown>;
     assert.equal(health.ok, true);
     assert.equal(health.auditStorageMode, 'backend-append-only');

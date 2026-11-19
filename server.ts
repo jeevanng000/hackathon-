@@ -249,6 +249,17 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
   app.disable('x-powered-by');
   app.use(requestIdMiddleware);
 
+  // iFrame-compatible security headers (never set X-Frame-Options: DENY/SAMEORIGIN so AI Studio preview iframe works)
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=(self)');
+    if (req.path.startsWith('/api/')) {
+      res.setHeader('Cache-Control', 'no-store');
+    }
+    next();
+  });
+
   const appCfg = loadAppEnvConfig();
   const limits = loadSecurityLimits();
   const rateLimiter = new SlidingWindowRateLimiter(60_000);
@@ -1145,7 +1156,6 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
   app.post('/api/graphrag/ingest', standardJsonParser, async (req, res) => {
     const requestId = (req as Request & { requestId?: string }).requestId || 'unknown';
     if (!checkRateLimit(req, res, 'graphrag', Math.min(limits.maxRequestsPerMinute, 12))) return;
-    if (!ensureGraphRagConfigured(res)) return;
 
     const { projectId, forceReindex, includeEmbeddings } = req.body ?? {};
     const projCheck = validateProjectId(projectId, 'autopatch-core');
@@ -1153,6 +1163,7 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       res.status(400).json({ error: projCheck.error });
       return;
     }
+    if (!ensureGraphRagConfigured(res)) return;
 
     try {
       const auditRecords = await auditStore.list(50).catch(() => []);
@@ -1201,7 +1212,6 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
   // 4. POST /api/graphrag/root-cause
   app.post('/api/graphrag/root-cause', standardJsonParser, async (req, res) => {
     if (!checkRateLimit(req, res, 'graphrag', limits.maxRequestsPerMinute)) return;
-    if (!ensureGraphRagConfigured(res)) return;
 
     const { projectId, findingId, query } = req.body ?? {};
     const projCheck = validateProjectId(projectId, 'autopatch-core');
@@ -1221,6 +1231,7 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       res.status(400).json({ error: 'Provide either findingId or query for root-cause analysis.' });
       return;
     }
+    if (!ensureGraphRagConfigured(res)) return;
 
     try {
       const result = await investigateRootCause({
@@ -1240,7 +1251,6 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
   // 5. POST /api/graphrag/impact-analysis
   app.post('/api/graphrag/impact-analysis', standardJsonParser, async (req, res) => {
     if (!checkRateLimit(req, res, 'graphrag', limits.maxRequestsPerMinute)) return;
-    if (!ensureGraphRagConfigured(res)) return;
 
     const { projectId, targetType, targetId, maxDepth } = req.body ?? {};
     const projCheck = validateProjectId(projectId, 'autopatch-core');
@@ -1253,6 +1263,7 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       res.status(400).json({ error: idCheck.error });
       return;
     }
+    if (!ensureGraphRagConfigured(res)) return;
     const safeType =
       typeof targetType === 'string' && ['Function', 'File', 'Class'].includes(targetType.trim())
         ? targetType.trim()
@@ -1277,7 +1288,6 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
   // 6. POST /api/graphrag/historical-search
   app.post('/api/graphrag/historical-search', standardJsonParser, async (req, res) => {
     if (!checkRateLimit(req, res, 'graphrag', limits.maxRequestsPerMinute)) return;
-    if (!ensureGraphRagConfigured(res)) return;
 
     const { projectId, query, limit } = req.body ?? {};
     const projCheck = validateProjectId(projectId, 'autopatch-core');
@@ -1289,6 +1299,7 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       res.status(400).json({ error: 'query is required for historical bug search.' });
       return;
     }
+    if (!ensureGraphRagConfigured(res)) return;
 
     try {
       const result = await searchHistoricalBugs({
@@ -1308,7 +1319,6 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
   // 7. POST /api/graphrag/ask
   app.post('/api/graphrag/ask', standardJsonParser, async (req, res) => {
     if (!checkRateLimit(req, res, 'graphrag', limits.maxRequestsPerMinute)) return;
-    if (!ensureGraphRagConfigured(res)) return;
 
     const { projectId, question, maxDepth, maxNodes } = req.body ?? {};
     const projCheck = validateProjectId(projectId, 'autopatch-core');
@@ -1320,6 +1330,7 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       res.status(400).json({ error: 'question is required.' });
       return;
     }
+    if (!ensureGraphRagConfigured(res)) return;
 
     try {
       const result = await answerGraphQuestion({
@@ -1340,13 +1351,13 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
   // 8. GET /api/graphrag/graph/:projectId
   app.get('/api/graphrag/graph/:projectId', async (req, res) => {
     if (!checkRateLimit(req, res, 'graphrag', limits.maxRequestsPerMinute)) return;
-    if (!ensureGraphRagConfigured(res)) return;
 
     const projCheck = validateProjectId(req.params.projectId);
     if (!projCheck.ok) {
       res.status(400).json({ error: projCheck.error });
       return;
     }
+    if (!ensureGraphRagConfigured(res)) return;
     const rawLimit = Number(req.query.limit ?? 80);
     const limit = Number.isFinite(rawLimit) ? rawLimit : 80;
 
@@ -1364,7 +1375,6 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
   // 9. GET /api/graphrag/entity/:projectId/:entityId
   app.get('/api/graphrag/entity/:projectId/:entityId', async (req, res) => {
     if (!checkRateLimit(req, res, 'graphrag', limits.maxRequestsPerMinute)) return;
-    if (!ensureGraphRagConfigured(res)) return;
 
     const projCheck = validateProjectId(req.params.projectId);
     if (!projCheck.ok) {
@@ -1376,6 +1386,7 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       res.status(400).json({ error: idCheck.error });
       return;
     }
+    if (!ensureGraphRagConfigured(res)) return;
 
     try {
       const detail = await getProjectEntityDetails(projCheck.projectId, idCheck.id);
@@ -1445,11 +1456,16 @@ async function startServer() {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   } else {
+    const envCfg = loadAppEnvConfig();
+    const useHmr =
+      !envCfg.disableHmr &&
+      (process.env.DISABLE_HMR === 'false' || envCfg.enableLocalHmr);
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        ws: { server },
+        hmr: useHmr ? { server } : false,
+        watch: useHmr ? {} : null,
       },
       appType: 'spa',
     });
