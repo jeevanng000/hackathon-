@@ -15,10 +15,12 @@ import json
 import math
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -591,6 +593,8 @@ def detect_and_parse(source_code: str, filename: str) -> Dict[str, Any]:
             ],
             "functions": [],
             "callGraph": [],
+            "analysisKind": "ast-parser",
+            "parserTool": "python3-ast",
         }
 
     analyzer = StaticAnalyzer(lines)
@@ -602,6 +606,8 @@ def detect_and_parse(source_code: str, filename: str) -> Dict[str, Any]:
         "findings": analyzer.findings,
         "functions": analyzer.functions,
         "callGraph": analyzer.call_edges,
+        "analysisKind": "ast-parser",
+        "parserTool": "python3-ast",
     }
 
 
@@ -678,7 +684,8 @@ SANDBOX_RUNNER_SCRIPT = textwrap.dedent(
                 }
             ],
         }
-        print(json.dumps(payload))
+        sys.stdout.write("\\n__AP_RESULT__:" + json.dumps(payload) + "\\n")
+        sys.stdout.flush()
         sys.exit(0)
 
     test_funcs = []
@@ -778,9 +785,142 @@ SANDBOX_RUNNER_SCRIPT = textwrap.dedent(
         "traceback": first_fail.get("traceback") if first_fail else None,
         "tests": results,
     }
-    print(json.dumps(payload))
+    sys.stdout.write("\\n__AP_RESULT__:" + json.dumps(payload) + "\\n")
+    sys.stdout.flush()
     """
 ).strip()
+
+
+NOBODY_UID = 65534
+NOBODY_GID = 65534
+_ISOLATION_PROBE_CACHE: Optional[Dict[str, bool]] = None
+
+
+def _env_int(name: str, default: int, min_val: int, max_val: int) -> int:
+    try:
+        val = int(os.environ.get(name, str(default)))
+        return max(min_val, min(max_val, val))
+    except ValueError:
+        return default
+
+
+def _sandbox_exec_allowed() -> bool:
+    raw = os.environ.get("SANDBOX_ALLOW_UNTRUSTED_EXEC", "true").strip().lower()
+    return raw not in ("false", "0", "no")
+
+
+def probe_python_sandbox_isolation() -> Dict[str, bool]:
+    global _ISOLATION_PROBE_CACHE
+    if _ISOLATION_PROBE_CACHE is not None:
+        return _ISOLATION_PROBE_CACHE
+
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    can_drop_nobody = False
+    has_ns = False
+    has_prlimit = False
+    minimal_env = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
+
+    try:
+        p = subprocess.run(
+            ["prlimit", "--cpu=1", "--", "true"],
+            capture_output=True,
+            timeout=2,
+            env=minimal_env,
+        )
+        has_prlimit = p.returncode == 0
+    except Exception:
+        has_prlimit = False
+
+    if is_root:
+        try:
+            p = subprocess.run(
+                ["unshare", "--user", "--net", "--pid", "--fork", "--mount-proc", "true"],
+                capture_output=True,
+                timeout=2,
+                env=minimal_env,
+                user=NOBODY_UID,
+                group=NOBODY_GID,
+            )
+            if p.returncode == 0:
+                can_drop_nobody = True
+                has_ns = True
+        except Exception:
+            pass
+
+    if not has_ns:
+        try:
+            p = subprocess.run(
+                ["unshare", "--user", "--map-root-user", "--net", "--pid", "--fork", "--mount-proc", "true"],
+                capture_output=True,
+                timeout=2,
+                env=minimal_env,
+            )
+            has_ns = p.returncode == 0
+        except Exception:
+            has_ns = False
+
+    _ISOLATION_PROBE_CACHE = {
+        "canDropToNobody": can_drop_nobody,
+        "hasNamespaceIsolation": has_ns,
+        "hasPrlimit": has_prlimit,
+    }
+    return _ISOLATION_PROBE_CACHE
+
+
+def get_python_sandbox_isolation_info() -> Dict[str, Any]:
+    probe = probe_python_sandbox_isolation()
+    if not _sandbox_exec_allowed():
+        return {
+            "level": "unavailable",
+            "isolatedUser": False,
+            "networkIsolated": False,
+            "pidIsolated": False,
+            "limitsApplied": [],
+            "limitations": [
+                "Untrusted execution disabled by SANDBOX_ALLOW_UNTRUSTED_EXEC=false.",
+                "Static Python AST analysis remains active; dynamic tests are blocked.",
+            ],
+        }
+    if probe["hasNamespaceIsolation"]:
+        mem_mb = _env_int("SANDBOX_MEMORY_MB", 256, 64, 1024)
+        cpu_s = _env_int("SANDBOX_CPU_SECONDS", 2, 1, 15)
+        max_out_kb = _env_int("SANDBOX_MAX_OUTPUT_BYTES", 65536, 4096, 524288) // 1024
+        limits = [
+            f"wall-clock timeout + SIGKILL process-group termination",
+            f"stdout/stderr cap ({max_out_kb} KB)",
+            "stripped environment (zero host secrets / no GEMINI_API_KEY)",
+            "python3 -I isolated mode",
+        ]
+        if probe["hasPrlimit"]:
+            limits.extend([
+                f"RLIMIT_CPU={cpu_s}s",
+                f"RLIMIT_AS={mem_mb}MB",
+                "RLIMIT_FSIZE=10MB",
+                "RLIMIT_NOFILE=64",
+                "RLIMIT_NPROC=32",
+            ])
+        return {
+            "level": "linux-namespace-unprivileged",
+            "isolatedUser": probe["canDropToNobody"],
+            "networkIsolated": True,
+            "pidIsolated": True,
+            "limitsApplied": limits,
+            "limitations": [
+                "Docker/Podman/Firecracker per-job containers are not installed in this cloud workspace.",
+                "Host root filesystem is not mounted read-only or chroot-jailed; world-readable system files remain readable by UID nobody.",
+                "Production deployment requires rootless Docker/Podman/gVisor per-job containers with --read-only, --cap-drop=ALL, --security-opt=no-new-privileges, and seccomp.",
+            ],
+        }
+    return {
+        "level": "unavailable",
+        "isolatedUser": False,
+        "networkIsolated": False,
+        "pidIsolated": False,
+        "limitsApplied": [],
+        "limitations": [
+            "Linux namespace isolation (unshare) is unavailable; fail-closed policy blocks unrestricted host execution.",
+        ],
+    }
 
 
 def sanitize_filename(name: str, fallback: str) -> str:
@@ -801,36 +941,153 @@ def run_sandbox_tests(
     safe_src = sanitize_filename(filename, "target_module.py")
     safe_test = sanitize_filename(test_filename, f"test_{safe_src}")
     start = time.perf_counter()
+    timeout_sec = max(0.5, min(5.0, float(timeout_sec)))
+
+    probe = probe_python_sandbox_isolation()
+    if not _sandbox_exec_allowed() or not probe["hasNamespaceIsolation"]:
+        elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+        reason = (
+            "Untrusted execution disabled by SANDBOX_ALLOW_UNTRUSTED_EXEC=false."
+            if not _sandbox_exec_allowed()
+            else "Linux namespace isolation (unshare) is unavailable; refusing unrestricted host execution."
+        )
+        return {
+            "timedOut": False,
+            "importError": False,
+            "passed": 0,
+            "failed": 0,
+            "total": 0,
+            "durationMs": elapsed_ms,
+            "errorType": "ExecutionUnavailable",
+            "errorMessage": reason,
+            "errorLine": None,
+            "traceback": reason,
+            "executionKind": "execution-unavailable",
+            "tests": [],
+        }
+
+    max_out_bytes = _env_int("SANDBOX_MAX_OUTPUT_BYTES", 65536, 4096, 524288)
+    mem_bytes = _env_int("SANDBOX_MEMORY_MB", 256, 64, 1024) * 1024 * 1024
+    cpu_sec = max(_env_int("SANDBOX_CPU_SECONDS", 2, 1, 15), int(math.ceil(timeout_sec)) + 1)
+    fsize_bytes = _env_int("SANDBOX_MAX_FILE_BYTES", 10 * 1024 * 1024, 1024 * 1024, 50 * 1024 * 1024)
+    nofile = _env_int("SANDBOX_MAX_OPEN_FILES", 64, 32, 256)
+    nproc = _env_int("SANDBOX_MAX_PROCESSES", 32, 8, 128)
 
     with tempfile.TemporaryDirectory(prefix="autopatch_sandbox_") as tmpdir:
+        os.chmod(tmpdir, 0o755)
         src_path = os.path.join(tmpdir, safe_src)
         test_path = os.path.join(tmpdir, safe_test)
         runner_path = os.path.join(tmpdir, "_autopatch_runner.py")
 
-        with open(src_path, "w", encoding="utf-8") as f:
-            f.write(source_code)
-        with open(test_path, "w", encoding="utf-8") as f:
-            f.write(test_code)
-        with open(runner_path, "w", encoding="utf-8") as f:
-            f.write(SANDBOX_RUNNER_SCRIPT)
+        for pth, content in ((src_path, source_code), (test_path, test_code), (runner_path, SANDBOX_RUNNER_SCRIPT)):
+            with open(pth, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.chmod(pth, 0o644)
+
+        if probe["canDropToNobody"]:
+            os.chown(tmpdir, NOBODY_UID, NOBODY_GID)
+            for pth in (src_path, test_path, runner_path):
+                os.chown(pth, NOBODY_UID, NOBODY_GID)
 
         env = {
-            "PATH": os.environ.get("PATH", ""),
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "HOME": tmpdir,
+            "TMPDIR": tmpdir,
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
+
+        cmd: List[str] = ["unshare"]
+        if probe["canDropToNobody"]:
+            cmd.extend(["--user", "--net", "--pid", "--fork", "--mount-proc"])
+        else:
+            cmd.extend(["--user", "--map-root-user", "--net", "--pid", "--fork", "--mount-proc"])
+
+        if probe["hasPrlimit"]:
+            cmd.extend([
+                "prlimit",
+                f"--cpu={cpu_sec}",
+                f"--as={mem_bytes}",
+                f"--fsize={fsize_bytes}",
+                f"--nofile={nofile}",
+                f"--nproc={nproc}",
+                "--",
+            ])
+
+        cmd.extend([sys.executable, "-I", runner_path, test_path, safe_src])
+
+        popen_kwargs: Dict[str, Any] = {
+            "cwd": tmpdir,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "env": env,
+            "start_new_session": True,
+        }
+        if probe["canDropToNobody"]:
+            popen_kwargs["user"] = NOBODY_UID
+            popen_kwargs["group"] = NOBODY_GID
+
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+
+        stdout_buf = bytearray()
+        stderr_buf = bytearray()
+        truncated_flag = {"hit": False}
+
+        def kill_tree() -> None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+        def drain_stream(stream: Any, bucket: bytearray) -> None:
+            try:
+                while True:
+                    chunk = stream.read(4096)
+                    if not chunk:
+                        break
+                    remaining = max_out_bytes - len(bucket)
+                    if remaining > 0:
+                        bucket.extend(chunk[:remaining])
+                    if len(bucket) >= max_out_bytes and not truncated_flag["hit"]:
+                        truncated_flag["hit"] = True
+                        kill_tree()
+                        break
+            except Exception:
+                pass
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        t_out = threading.Thread(target=drain_stream, args=(proc.stdout, stdout_buf), daemon=True)
+        t_err = threading.Thread(target=drain_stream, args=(proc.stderr, stderr_buf), daemon=True)
+        t_out.start()
+        t_err.start()
+
+        timed_out = False
         try:
-            proc = subprocess.run(
-                [sys.executable, "-I", runner_path, test_path, safe_src],
-                cwd=tmpdir,
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec,
-                env=env,
-            )
+            proc.wait(timeout=timeout_sec)
         except subprocess.TimeoutExpired:
-            elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+            timed_out = True
+            kill_tree()
+            try:
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
+
+        t_out.join(timeout=0.5)
+        t_err.join(timeout=0.5)
+
+        elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+
+        if timed_out:
             tb = (
-                f"SandboxTimeoutError: Subprocess killed after {timeout_sec:.1f}s wall-clock limit.\n"
+                f"SandboxTimeoutError: Isolated process tree killed after {timeout_sec:.1f}s wall-clock limit.\n"
                 f"  Target module: {safe_src}\n"
                 f"  Test suite: {safe_test}\n"
                 f"  Diagnosis: Execution did not terminate within isolated sandbox budget (likely unbounded loop)."
@@ -846,13 +1103,15 @@ def run_sandbox_tests(
                 "errorMessage": f"Execution exceeded {timeout_sec:.1f}s sandbox timeout (unbounded loop detected).",
                 "errorLine": None,
                 "traceback": tb,
+                "executionKind": "dynamic-sandbox",
+                "outputTruncated": truncated_flag["hit"],
                 "tests": [
                     {
                         "name": "sandbox_execution_budget",
                         "status": "failed",
                         "durationMs": elapsed_ms,
                         "errorType": "TimeoutError",
-                        "errorMessage": f"Process terminated after {timeout_sec:.1f}s timeout.",
+                        "errorMessage": f"Process tree terminated after {timeout_sec:.1f}s timeout.",
                         "errorLine": None,
                         "traceback": tb,
                         "executedLines": [],
@@ -860,18 +1119,50 @@ def run_sandbox_tests(
                 ],
             }
 
-        elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
-        stdout = (proc.stdout or "").strip()
-        if stdout:
-            last_line = stdout.splitlines()[-1]
-            try:
-                parsed = json.loads(last_line)
-                parsed["timedOut"] = False
-                return parsed
-            except json.JSONDecodeError:
-                pass
+        if truncated_flag["hit"]:
+            return {
+                "timedOut": False,
+                "importError": False,
+                "passed": 0,
+                "failed": 1,
+                "total": 1,
+                "durationMs": elapsed_ms,
+                "errorType": "OutputLimitExceeded",
+                "errorMessage": f"Process exceeded {max_out_bytes // 1024} KB stdout/stderr cap and was terminated.",
+                "errorLine": None,
+                "traceback": "OutputLimitExceeded: Process output exceeded sandbox buffer cap.",
+                "executionKind": "dynamic-sandbox",
+                "outputTruncated": True,
+                "tests": [
+                    {
+                        "name": "sandbox_output_budget",
+                        "status": "failed",
+                        "durationMs": elapsed_ms,
+                        "errorType": "OutputLimitExceeded",
+                        "errorMessage": "Exceeded sandbox output cap.",
+                        "errorLine": None,
+                        "executedLines": [],
+                    }
+                ],
+            }
 
-        stderr = (proc.stderr or "").strip()
+        stdout = stdout_buf.decode("utf-8", errors="replace").strip()
+        stderr = stderr_buf.decode("utf-8", errors="replace").strip()
+
+        marker = "__AP_RESULT__:"
+        for line in reversed(stdout.splitlines()):
+            if line.startswith(marker):
+                try:
+                    parsed = json.loads(line[len(marker):])
+                    parsed["timedOut"] = False
+                    parsed["executionKind"] = "dynamic-sandbox"
+                    if parsed.get("total", 0) == 0 and not parsed.get("importError"):
+                        parsed["errorType"] = "NoTestsExecuted"
+                        parsed["errorMessage"] = "No test_* functions or unittest.TestCase methods were discovered or executed."
+                    return parsed
+                except json.JSONDecodeError:
+                    pass
+
         return {
             "timedOut": False,
             "importError": True,
@@ -880,9 +1171,10 @@ def run_sandbox_tests(
             "total": 1,
             "durationMs": elapsed_ms,
             "errorType": "RuntimeError",
-            "errorMessage": stderr or "Sandbox runner failed to produce test report.",
+            "errorMessage": stderr or "Isolated Python sandbox runner failed to produce test report.",
             "errorLine": None,
             "traceback": stderr or stdout,
+            "executionKind": "dynamic-sandbox",
             "tests": [],
         }
 
@@ -891,17 +1183,44 @@ def compute_sbfl_spectrum(source_code: str, baseline: Dict[str, Any]) -> Dict[st
     """
     Compute real Spectrum-Based Fault Localization (SBFL) metrics
     (Activity Matrix, Error Vector, Ochiai & Tarantula suspiciousness scores).
+    Never fabricates coverage lines when dynamic tests did not execute.
     """
     lines = source_code.splitlines()
     tests = baseline.get("tests", [])
     total_failed = sum(1 for t in tests if t.get("status") == "failed")
     total_passed = sum(1 for t in tests if t.get("status") == "passed")
 
+    if baseline.get("executionKind") != "dynamic-sandbox":
+        return {
+            "totalPassed": total_passed,
+            "totalFailed": total_failed,
+            "tests": [{"name": t["name"], "status": t["status"]} for t in tests],
+            "rankings": [],
+            "coverageStatus": "unavailable",
+            "coverageNote": (
+                "Dynamic line coverage unavailable because isolated sandbox execution is disabled or unavailable."
+                if baseline.get("executionKind") == "execution-unavailable"
+                else "Dynamic line coverage unavailable (static-only baseline; no runtime tests executed)."
+            ),
+        }
+
     covered_lines: Set[int] = set()
     for t in tests:
         for ln in t.get("executedLines") or []:
             if isinstance(ln, int) and 1 <= ln <= len(lines):
                 covered_lines.add(ln)
+
+    if not covered_lines:
+        return {
+            "totalPassed": total_passed,
+            "totalFailed": total_failed,
+            "tests": [{"name": t["name"], "status": t["status"]} for t in tests],
+            "rankings": [],
+            "coverageStatus": "empty" if tests else "unavailable",
+            "coverageNote": "Tests ran without tracing executable lines in the target module."
+            if tests
+            else "No dynamic tests executed.",
+        }
 
     rankings: List[Dict[str, Any]] = []
     for ln in sorted(covered_lines):
@@ -917,13 +1236,11 @@ def compute_sbfl_spectrum(source_code: str, baseline: Dict[str, Any]) -> Dict[st
                 else:
                     passed_cov += 1
 
-        # Ochiai = ef / sqrt(total_failed * (ef + ep))
         if total_failed > 0 and (failed_cov + passed_cov) > 0:
             ochiai = failed_cov / math.sqrt(total_failed * (failed_cov + passed_cov))
         else:
             ochiai = 0.0
 
-        # Tarantula = (ef / total_failed) / ((ef / total_failed) + (ep / total_passed))
         fail_ratio = (failed_cov / total_failed) if total_failed > 0 else 0.0
         pass_ratio = (passed_cov / total_passed) if total_passed > 0 else 0.0
         if (fail_ratio + pass_ratio) > 0:
@@ -951,6 +1268,8 @@ def compute_sbfl_spectrum(source_code: str, baseline: Dict[str, Any]) -> Dict[st
             for t in tests
         ],
         "rankings": rankings,
+        "coverageStatus": "collected",
+        "coverageNote": f"Collected real Python sys.settrace coverage across {len(rankings)} executed line(s).",
     }
 
 
@@ -1592,25 +1911,17 @@ def generate_candidate_patch(
             except SyntaxError:
                 pass
 
-    # 5. Infinite Loop / Timeout — Trust Layer blocks blind auto-patching
+    # 5. Infinite Loop / Timeout — Trust Layer blocks blind auto-patching and preserves original code
     if baseline.get("timedOut") or err_type == "TimeoutError" or any(f["kind"] == "InfiniteLoopRisk" for f in findings):
         loop_finding = next((f for f in findings if f["kind"] == "InfiniteLoopRisk"), None)
         target_line = loop_finding["line"] if loop_finding else (err_line or 1)
-        repaired_lines = list(lines)
-        if 1 <= target_line <= len(lines):
-            indent = _find_indent(repaired_lines[target_line - 1])
-            repaired_lines.insert(
-                target_line - 1,
-                f"{indent}# REVIEW REQUIRED: Add explicit retry/dead-letter bound before executing loop",
-            )
-        candidate = "\n".join(repaired_lines) + ("\n" if source_code.endswith("\n") else "")
         return (
             {
-                "patchedCode": candidate,
+                "patchedCode": source_code,
                 "patchApplied": False,
                 "aprStrategy": "Trust Gate — Human Review Required",
                 "ruleId": "TRUST_GATE_HUMAN_REVIEW",
-                "strategy": "Detected unbounded loop / sandbox timeout. Automatic semantic rewrite refused because dead-letter or retry policy requires developer intent.",
+                "strategy": "Detected unbounded loop / sandbox timeout. Original source preserved unmodified because dead-letter or retry policy requires developer intent.",
                 "targetLine": target_line,
                 "bugType": "InfiniteLoopTimeout",
                 "rootCause": f"Isolated sandbox timed out after {timeout_sec:.1f}s. CFG analysis detected an unbounded loop at line {target_line} ({loop_finding['snippet'] if loop_finding else 'while loop'}) where failed work items re-enter the queue without a termination cap.",
@@ -1679,17 +1990,18 @@ def compute_confidence(
     sandbox: Dict[str, Any],
     diff_data: Dict[str, Any],
     sbfl: Dict[str, Any],
+    verification_mode: str = "dynamic-sandbox",
 ) -> Dict[str, Any]:
-    """Deterministic, auditable confidence breakdown (0-100)."""
+    """Deterministic, honest, auditable confidence breakdown (0-100)."""
     factors: List[Dict[str, Any]] = []
     score = 0
 
-    # 1. Fault Localization Evidence (AST or SBFL Ochiai >= 0.5) (max 25)
+    # 1. Fault Localization Evidence (AST or real SBFL Ochiai >= 0.5) (max 25)
     has_ast_finding = len(ast_report.get("findings", [])) > 0
     top_ochiai = sbfl["rankings"][0]["ochiai"] if sbfl.get("rankings") else 0.0
     if has_ast_finding:
         score += 25
-        factors.append({"label": "AST / SBFL Localization", "points": 25, "maxPoints": 25, "detail": "Static AST confirmed defect location"})
+        factors.append({"label": "AST / SBFL Localization", "points": 25, "maxPoints": 25, "detail": "Python AST confirmed defect location"})
     elif top_ochiai >= 0.5:
         score += 25
         factors.append({"label": "AST / SBFL Localization", "points": 25, "maxPoints": 25, "detail": f"SBFL Ochiai localized defect ({top_ochiai:.3f})"})
@@ -1698,35 +2010,56 @@ def compute_confidence(
 
     # 2. Patch minimality & syntax soundness (max 20)
     total_delta = diff_data.get("linesAdded", 0) + diff_data.get("linesRemoved", 0)
-    if patch_info.get("patchApplied") and 1 <= total_delta <= 6:
+    patched_syntax_ok = True
+    if patch_info.get("patchApplied"):
+        try:
+            ast.parse(patch_info.get("patchedCode", ""))
+        except SyntaxError:
+            patched_syntax_ok = False
+    if patch_info.get("patchApplied") and patched_syntax_ok and 1 <= total_delta <= 6:
         score += 20
-        factors.append({"label": "Minimal Surgical Diff", "points": 20, "maxPoints": 20, "detail": f"{total_delta} line(s) touched; clean AST parse"})
-    elif patch_info.get("patchApplied") and total_delta > 6:
+        factors.append({"label": "Minimal Surgical Diff", "points": 20, "maxPoints": 20, "detail": f"{total_delta} line(s) touched; clean Python AST parse"})
+    elif patch_info.get("patchApplied") and patched_syntax_ok and total_delta > 6:
         score += 12
-        factors.append({"label": "Minimal Surgical Diff", "points": 12, "maxPoints": 20, "detail": f"{total_delta} lines touched"})
+        factors.append({"label": "Minimal Surgical Diff", "points": 12, "maxPoints": 20, "detail": f"{total_delta} lines touched; clean Python AST parse"})
     else:
         factors.append({"label": "Minimal Surgical Diff", "points": 0, "maxPoints": 20, "detail": "No automatic code rewrite applied"})
 
-    # 3. Sandbox test pass rate (max 40)
+    # 3. Dynamic Sandbox Verification (max 40) — STRICTLY ZERO unless real tests executed in sandbox
     total_tests = sandbox.get("total", 0)
     passed_tests = sandbox.get("passed", 0)
-    if not sandbox.get("timedOut") and total_tests > 0 and sandbox.get("failed", 0) == 0:
+    if (
+        verification_mode == "dynamic-sandbox"
+        and not sandbox.get("timedOut")
+        and not sandbox.get("importError")
+        and total_tests > 0
+        and passed_tests > 0
+        and sandbox.get("failed", 0) == 0
+    ):
         score += 40
-        factors.append({"label": "Sandbox Verification", "points": 40, "maxPoints": 40, "detail": f"{passed_tests}/{total_tests} tests passed in isolation"})
-    elif total_tests > 0 and passed_tests > 0:
-        partial = round(20 * (passed_tests / total_tests))
-        score += partial
-        factors.append({"label": "Sandbox Verification", "points": partial, "maxPoints": 40, "detail": f"{passed_tests}/{total_tests} passed (blocked)"})
+        factors.append({"label": "Dynamic Sandbox Verification", "points": 40, "maxPoints": 40, "detail": f"{passed_tests}/{total_tests} real tests passed in isolated namespace sandbox"})
+    elif verification_mode == "static-only":
+        factors.append({"label": "Dynamic Sandbox Verification", "points": 0, "maxPoints": 40, "detail": "Static checks only — no runnable unit tests executed"})
+    elif verification_mode == "execution-unavailable":
+        factors.append({"label": "Dynamic Sandbox Verification", "points": 0, "maxPoints": 40, "detail": "Isolated sandbox execution unavailable (fail-closed)"})
     else:
-        factors.append({"label": "Sandbox Verification", "points": 0, "maxPoints": 40, "detail": "Sandbox failed or timed out"})
+        factors.append({"label": "Dynamic Sandbox Verification", "points": 0, "maxPoints": 40, "detail": "Dynamic tests failed, timed out, or had zero assertions"})
 
-    # 4. Zero regressions vs baseline (max 15)
-    no_regression = (not sandbox.get("timedOut")) and (sandbox.get("passed", 0) >= baseline.get("passed", 0)) and (sandbox.get("failed", 0) == 0)
-    if no_regression and total_tests > 0:
+    # 4. Zero runtime regressions vs server baseline (max 15)
+    no_regression = (
+        verification_mode == "dynamic-sandbox"
+        and not sandbox.get("timedOut")
+        and not sandbox.get("importError")
+        and sandbox.get("passed", 0) >= baseline.get("passed", 0)
+        and sandbox.get("failed", 0) == 0
+        and passed_tests > 0
+        and total_tests > 0
+    )
+    if no_regression:
         score += 15
-        factors.append({"label": "Zero Regressions", "points": 15, "maxPoints": 15, "detail": "All previously passing tests remain green"})
+        factors.append({"label": "Zero Runtime Regressions", "points": 15, "maxPoints": 15, "detail": "All baseline runtime tests remain green"})
     else:
-        factors.append({"label": "Zero Regressions", "points": 0, "maxPoints": 15, "detail": "Regression or unresolved failure present"})
+        factors.append({"label": "Zero Runtime Regressions", "points": 0, "maxPoints": 15, "detail": "Cannot confirm zero regressions without passing dynamic tests"})
 
     return {
         "score": min(100, max(0, score)),
@@ -1739,12 +2072,17 @@ def evaluate_trust_verdict(
     sandbox: Dict[str, Any],
     patch_info: Dict[str, Any],
     ast_report: Dict[str, Any],
+    verification_mode: str = "dynamic-sandbox",
 ) -> str:
+    if verification_mode != "dynamic-sandbox":
+        return "blocked"
     has_blocking_static = any(f.get("severity") == "error" for f in ast_report.get("findings", []))
     if (
-        baseline.get("failed", 0) == 0
+        baseline.get("executionKind") == "dynamic-sandbox"
+        and baseline.get("failed", 0) == 0
         and baseline.get("passed", 0) > 0
         and not baseline.get("timedOut")
+        and not baseline.get("importError")
         and not has_blocking_static
         and not patch_info.get("patchApplied", False)
     ):
@@ -1753,6 +2091,7 @@ def evaluate_trust_verdict(
         not sandbox.get("timedOut")
         and not sandbox.get("importError")
         and sandbox.get("total", 0) > 0
+        and sandbox.get("passed", 0) > 0
         and sandbox.get("failed", 0) == 0
         and sandbox.get("passed", 0) >= baseline.get("passed", 0)
         and not patch_info.get("requiresHumanReview", False)
@@ -1904,6 +2243,7 @@ def build_static_or_context_baseline(
         "errorMessage": err_msg,
         "errorLine": err_line,
         "traceback": bug_context.strip() or (f"{err_type}: {err_msg} (line {err_line})" if err_type else None),
+        "executionKind": "static-only",
         "tests": [
             {
                 "name": "static_and_traceback_triage",
@@ -1913,7 +2253,7 @@ def build_static_or_context_baseline(
                 "errorMessage": err_msg,
                 "errorLine": err_line,
                 "traceback": bug_context.strip() or (f"{err_type}: {err_msg}" if err_type else None),
-                "executedLines": [err_line] if err_line else [],
+                "executedLines": [],
             }
         ],
     }
@@ -1924,22 +2264,32 @@ def synthesize_python_validation_tests(
     patched_code: str,
     ast_report: Dict[str, Any],
     patch_info: Dict[str, Any],
-) -> str:
+) -> Optional[str]:
     """
-    Auto-generates a runnable pytest / standalone unit test suite when the user
-    only provided source code + a traceback log.
+    Synthesizes genuine behavioral unit tests ONLY when the function contract and
+    failing edge case can be deterministically verified.
+    NEVER emits placeholder `assert True` or import-only tests — returns None instead
+    so the engine honestly requires human-written tests.
     """
     mod_name = os.path.splitext(os.path.basename(filename))[0]
     funcs = [f["name"] for f in ast_report.get("functions", [])]
     lines: List[str] = []
-    if funcs:
-        lines.append(f"from {mod_name} import {', '.join(funcs)}")
-    else:
-        lines.append(f"import {mod_name}")
-    lines.append("")
-    lines.append("")
+
+    has_behavioral = False
+    imported: List[str] = []
 
     if "authenticate_user" in funcs:
+        imported.append("authenticate_user")
+    if "reset_password" in funcs:
+        imported.append("reset_password")
+
+    if imported:
+        lines.append(f"from {mod_name} import {', '.join(imported)}")
+        lines.append("")
+        lines.append("")
+
+    if "authenticate_user" in funcs:
+        has_behavioral = True
         lines.extend([
             "def test_authenticate_existing_and_missing_user():",
             "    db = {'alice': {'password': 'secret', 'is_active': True, 'role': 'admin'}}",
@@ -1949,22 +2299,19 @@ def synthesize_python_validation_tests(
             "",
         ])
     if "reset_password" in funcs:
+        has_behavioral = True
         lines.extend([
             "def test_reset_password_existing_and_missing_user():",
             "    db = {'alice': {'password': 'old', 'is_active': True}}",
             "    assert reset_password(db, 'alice', 'new') is True",
+            "    assert db['alice']['password'] == 'new'",
             "    assert reset_password(db, 'missing_user', 'new') is False",
             "",
             "",
         ])
 
-    if len(lines) <= 3:
-        lines.extend([
-            "def test_module_compiles_and_exports_functions():",
-            f"    exported = [{', '.join(funcs)}]" if funcs else f"    assert {mod_name} is not None",
-            "    assert len(exported) >= 1" if funcs else "    assert True",
-            "",
-        ])
+    if not has_behavioral:
+        return None
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1975,13 +2322,16 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
     source_code = req.get("sourceCode", "")
     test_code = (req.get("testCode") or "").strip()
     bug_context = (req.get("bugContext") or "").strip()
-    timeout_sec = float(req.get("timeoutSeconds", 2.0))
+    timeout_sec = max(0.5, min(5.0, float(req.get("timeoutSeconds", 2.0))))
+    sandbox_isolation = get_python_sandbox_isolation_info()
 
-    # Stage 1: Static Analysis (AST + CFG + Taint + Call Graph + Complexity)
+    # Stage 1: Genuine Python AST + CFG + Taint + Call Graph + Complexity
     ast_report = detect_and_parse(source_code, filename)
 
-    # Stage 2: Dynamic Baseline Subprocess Execution (or Traceback + AST Triage if no test suite given)
+    # Stage 2: Dynamic Baseline Execution in Isolated Sandbox (or static triage if no tests supplied)
     generated_test_code: Optional[str] = None
+    test_synthesis_status = "user-provided" if test_code else "unavailable-human-tests-required"
+
     if test_code:
         baseline = run_sandbox_tests(source_code, test_code, filename, test_filename, timeout_sec=timeout_sec)
     else:
@@ -1996,22 +2346,40 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
     patched_code = patch_info["patchedCode"]
     diff_data = compute_diff_data(source_code, patched_code, filename)
 
-    # If user didn't supply a test suite, synthesize a validation test suite and execute it in the sandbox
+    # If user didn't supply tests, attempt genuine behavioral test synthesis (never placeholder tests)
     active_test_code = test_code
     if not active_test_code:
-        generated_test_code = synthesize_python_validation_tests(filename, patched_code, ast_report, patch_info)
-        active_test_code = generated_test_code
+        candidate_tests = synthesize_python_validation_tests(filename, patched_code, ast_report, patch_info)
+        if candidate_tests:
+            # Verify synthesized tests genuinely reproduce the failure on original code
+            synth_orig = run_sandbox_tests(source_code, candidate_tests, filename, test_filename, timeout_sec=timeout_sec)
+            if synth_orig.get("executionKind") == "dynamic-sandbox" and synth_orig.get("failed", 0) > 0:
+                generated_test_code = candidate_tests
+                active_test_code = candidate_tests
+                baseline = synth_orig
+                sbfl = compute_sbfl_spectrum(source_code, baseline)
+                test_synthesis_status = "synthesized-behavioral"
 
     # Stage 4: Isolated Sandbox Validation on Candidate Patch
     if precomputed_sandbox is not None:
         sandbox = precomputed_sandbox
-    elif patch_info.get("patchApplied") or generated_test_code:
+    elif active_test_code and (patch_info.get("patchApplied") or generated_test_code):
         sandbox = run_sandbox_tests(patched_code, active_test_code, filename, test_filename, timeout_sec=timeout_sec)
+    elif not active_test_code and patch_info.get("patchApplied"):
+        patched_ast = detect_and_parse(patched_code, filename)
+        sandbox = build_static_or_context_baseline(patched_code, filename, patched_ast, "")
     else:
         sandbox = dict(baseline)
 
-    trust_verdict = evaluate_trust_verdict(baseline, sandbox, patch_info, ast_report)
-    confidence = compute_confidence(ast_report, baseline, patch_info, sandbox, diff_data, sbfl)
+    if sandbox.get("executionKind") == "execution-unavailable":
+        verification_mode = "execution-unavailable"
+    elif active_test_code and sandbox.get("executionKind") == "dynamic-sandbox":
+        verification_mode = "dynamic-sandbox"
+    else:
+        verification_mode = "static-only"
+
+    trust_verdict = evaluate_trust_verdict(baseline, sandbox, patch_info, ast_report, verification_mode)
+    confidence = compute_confidence(ast_report, baseline, patch_info, sandbox, diff_data, sbfl, verification_mode)
     eli10 = build_eli10_explanation(
         patch_info.get("bugType", "Defect"),
         patch_info.get("targetLine") or baseline.get("errorLine"),
@@ -2019,6 +2387,16 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
         patch_info.get("rootCause", ""),
         patch_info.get("strategy", ""),
     )
+
+    uncertainty: List[str] = []
+    if verification_mode == "static-only":
+        uncertainty.append("No runnable unit test suite was supplied; patch was checked statically via Python AST only.")
+    elif verification_mode == "execution-unavailable":
+        uncertainty.append(sandbox.get("errorMessage") or "Isolated sandbox execution unavailable; dynamic checks blocked.")
+    if test_synthesis_status == "unavailable-human-tests-required":
+        uncertainty.append("Automatic behavioral test synthesis unavailable for this function; supply real unit tests to verify dynamically.")
+    if sandbox.get("failed", 0) > 0 or sandbox.get("timedOut"):
+        uncertainty.append("One or more dynamic tests failed or timed out; human review required.")
 
     result: Dict[str, Any] = {
         "filename": filename,
@@ -2034,6 +2412,12 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
         "diff": diff_data,
         "confidence": confidence,
         "trustVerdict": trust_verdict,
+        "verificationMode": verification_mode,
+        "analysisKind": "ast-parser",
+        "testSynthesisStatus": test_synthesis_status,
+        "sandboxIsolation": sandbox_isolation,
+        "remainingUncertainty": uncertainty,
+        "auditStorageMode": "client-local-only",
     }
     if generated_test_code:
         result["generatedTestCode"] = generated_test_code
@@ -2045,30 +2429,58 @@ def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:
     test_filename = sanitize_filename(req.get("testFilename", f"test_{filename}"), f"test_{filename}")
     original_code = req.get("originalCode", "")
     candidate_code = req.get("candidateCode", "")
-    test_code = req.get("testCode", "")
-    timeout_sec = float(req.get("timeoutSeconds", 2.0))
+    test_code = (req.get("testCode") or "").strip()
+    timeout_sec = max(0.5, min(5.0, float(req.get("timeoutSeconds", 2.0))))
+    sandbox_isolation = get_python_sandbox_isolation_info()
 
     ast_report = detect_and_parse(candidate_code, filename)
-    baseline = req.get("baseline") or run_sandbox_tests(original_code, test_code, filename, test_filename, timeout_sec=timeout_sec)
+    orig_ast = detect_and_parse(original_code, filename)
+
+    # SECURITY: NEVER trust client-supplied `baseline`. Only accept `_trustedServerBaseline`
+    # verified by server.ts against SHA-256 hash; otherwise ALWAYS recompute server-side.
+    trusted_baseline = req.get("_trustedServerBaseline")
+    if test_code:
+        baseline = (
+            trusted_baseline
+            if isinstance(trusted_baseline, dict) and trusted_baseline.get("executionKind") == "dynamic-sandbox"
+            else run_sandbox_tests(original_code, test_code, filename, test_filename, timeout_sec=timeout_sec)
+        )
+        sandbox = run_sandbox_tests(candidate_code, test_code, filename, test_filename, timeout_sec=timeout_sec)
+        test_synthesis_status = "user-provided"
+    else:
+        baseline = build_static_or_context_baseline(original_code, filename, orig_ast, "")
+        sandbox = build_static_or_context_baseline(candidate_code, filename, ast_report, "")
+        test_synthesis_status = "unavailable-human-tests-required"
+
     sbfl = compute_sbfl_spectrum(original_code, baseline)
-    sandbox = run_sandbox_tests(candidate_code, test_code, filename, test_filename, timeout_sec=timeout_sec)
     diff_data = compute_diff_data(original_code, candidate_code, filename)
+
+    if sandbox.get("executionKind") == "execution-unavailable":
+        verification_mode = "execution-unavailable"
+    elif test_code and sandbox.get("executionKind") == "dynamic-sandbox":
+        verification_mode = "dynamic-sandbox"
+    else:
+        verification_mode = "static-only"
 
     patch_info = {
         "patchedCode": candidate_code,
         "patchApplied": candidate_code != original_code,
         "aprStrategy": "Developer Manual Patch",
         "ruleId": "DEVELOPER_MANUAL_PATCH",
-        "strategy": "Developer-edited candidate patch validated directly in isolated Python sandbox.",
+        "strategy": (
+            "Developer-edited candidate patch validated directly in isolated Python namespace sandbox."
+            if verification_mode == "dynamic-sandbox"
+            else "Developer-edited candidate patch checked statically only (no unit tests executed)."
+        ),
         "targetLine": req.get("targetLine"),
         "bugType": req.get("bugType") or baseline.get("errorType") or "ManualFix",
-        "rootCause": req.get("rootCause") or "Custom developer patch verified against unit test suite.",
-        "requiresHumanReview": False,
+        "rootCause": req.get("rootCause") or "Custom developer patch submitted for validation.",
+        "requiresHumanReview": verification_mode != "dynamic-sandbox",
         "evaluatedMutants": [],
         "durationMs": 0.5,
     }
 
-    trust_verdict = evaluate_trust_verdict(baseline, sandbox, patch_info, ast_report)
+    trust_verdict = evaluate_trust_verdict(baseline, sandbox, patch_info, ast_report, verification_mode)
     confidence = compute_confidence(
         {"syntaxValid": ast_report["syntaxValid"], "findings": [{"kind": "ManualReview"}] if ast_report["syntaxValid"] else []},
         baseline,
@@ -2076,6 +2488,7 @@ def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:
         sandbox,
         diff_data,
         sbfl,
+        verification_mode,
     )
     eli10 = build_eli10_explanation(
         patch_info["bugType"],
@@ -2084,6 +2497,10 @@ def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:
         patch_info["rootCause"],
         patch_info["strategy"],
     )
+
+    uncertainty: List[str] = []
+    if verification_mode != "dynamic-sandbox":
+        uncertainty.append("Manual patch was not dynamically verified against unit tests; supply tests to verify.")
 
     return {
         "filename": filename,
@@ -2099,6 +2516,12 @@ def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:
         "diff": diff_data,
         "confidence": confidence,
         "trustVerdict": trust_verdict,
+        "verificationMode": verification_mode,
+        "analysisKind": "ast-parser",
+        "testSynthesisStatus": test_synthesis_status,
+        "sandboxIsolation": sandbox_isolation,
+        "remainingUncertainty": uncertainty,
+        "auditStorageMode": "client-local-only",
     }
 
 

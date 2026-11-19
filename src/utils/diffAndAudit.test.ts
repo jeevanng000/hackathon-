@@ -113,12 +113,13 @@ test('All 6 multi-language golden demos (Python, TypeScript, C, Java) pass end-t
             timeoutSeconds: 2.0,
           });
 
-    if (demo.expectedOutcome === 'auto-verified') {
+    if (demo.expectedOutcome === 'auto-verified' && demo.language !== 'java') {
       assert.equal(
         res.trustVerdict,
         'verified',
         `${demo.filename} (${demo.language}) should produce verified verdict, got ${res.trustVerdict} (${res.sandbox.errorMessage})`
       );
+      assert.equal(res.verificationMode, 'dynamic-sandbox');
       assert.equal(res.sandbox.failed, 0, `${demo.filename} sandbox should have 0 failed checks`);
       assert.ok(res.sandbox.passed >= 3, `${demo.filename} should pass all checks`);
       assert.ok(res.confidence.score >= 85, `${demo.filename} confidence should be high`);
@@ -131,6 +132,7 @@ test('All 6 multi-language golden demos (Python, TypeScript, C, Java) pass end-t
 
       if (demo.id === 'discount-sbfl-mutation') {
         assert.ok(res.sbfl && res.sbfl.rankings.length > 0, 'discount_rules.py should produce SBFL rankings');
+        assert.equal(res.sbfl?.coverageStatus, 'collected');
         assert.ok(
           (res.patchInfo.evaluatedMutants?.length ?? 0) >= 1,
           'discount_rules.py should record Search-Based APR mutant evaluations'
@@ -140,17 +142,23 @@ test('All 6 multi-language golden demos (Python, TypeScript, C, Java) pass end-t
 
       if (demo.id === 'ts-cart-index') {
         assert.ok(res.patchedCode.includes('i < items.length'));
+        assert.equal(res.sbfl?.coverageStatus, 'collected');
+        assert.ok((res.sbfl?.rankings.length ?? 0) >= 1, 'TS demo should collect real Acorn AST SBFL rankings');
       }
 
       if (demo.id === 'c-telemetry-div') {
         assert.ok(res.patchedCode.includes('if (count == 0)'));
       }
-
-      if (demo.id === 'java-order-taint') {
-        assert.ok(res.patchedCode.includes('WHERE customer_id = ?'));
-        assert.ok(res.patchedCode.includes('i < ids.length'));
-        assert.ok(!res.patchedCode.includes('unreachableLog'));
-      }
+    } else if (demo.id === 'java-order-taint') {
+      // Honest static-only verification: Java has no local javac/JUnit runtime in this container,
+      // so the patch is generated accurately but trustVerdict MUST be 'blocked' (static-only), never 'verified'.
+      assert.equal(res.verificationMode, 'static-only');
+      assert.equal(res.analysisKind, 'heuristic');
+      assert.equal(res.trustVerdict, 'blocked');
+      assert.ok(res.confidence.score <= 45, 'Static-only Java confidence must not include dynamic sandbox points');
+      assert.ok(res.patchedCode.includes('WHERE customer_id = ?'));
+      assert.ok(res.patchedCode.includes('i < ids.length'));
+      assert.ok(!res.patchedCode.includes('unreachableLog'));
     } else {
       assert.equal(
         res.trustVerdict,
@@ -163,7 +171,7 @@ test('All 6 multi-language golden demos (Python, TypeScript, C, Java) pass end-t
   }
 });
 
-test('Universal multi-language engine also patches Rust, Go, and Bash modules cleanly', async () => {
+test('Universal multi-language engine patches Rust (static-only blocked) and Bash (sandbox verified) honestly', async () => {
   const rustRes = await runMultiLangAnalysis({
     action: 'analyze',
     language: 'rust',
@@ -179,7 +187,10 @@ test('Universal multi-language engine also patches Rust, Go, and Bash modules cl
 `,
     testCode: '',
   });
-  assert.equal(rustRes.trustVerdict, 'verified');
+  assert.equal(rustRes.verificationMode, 'static-only');
+  assert.equal(rustRes.analysisKind, 'heuristic');
+  assert.equal(rustRes.trustVerdict, 'blocked');
+  assert.equal(rustRes.generatedTestCode, undefined);
   assert.ok(rustRes.patchedCode.includes('0..vals.len()'));
 
   const bashRes = await runMultiLangAnalysis({
@@ -203,6 +214,7 @@ zero_out=$(safe_ratio 10 0)
 test "$zero_out" = "0"
 `,
   });
+  assert.equal(bashRes.verificationMode, 'dynamic-sandbox');
   assert.equal(bashRes.trustVerdict, 'verified');
   assert.equal(bashRes.sandbox.passed, 1);
 });

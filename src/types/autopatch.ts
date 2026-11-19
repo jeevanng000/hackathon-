@@ -30,12 +30,46 @@ export interface CallGraphEdge {
   callee: string;
 }
 
+export type AnalysisKind = 'ast-parser' | 'compiler-diagnostics' | 'heuristic';
+
+export type VerificationMode =
+  | 'dynamic-sandbox'
+  | 'compile-only'
+  | 'static-only'
+  | 'execution-unavailable'
+  | 'blocked';
+
+export type VerificationStatus =
+  | 'RUNTIME_VERIFIED'
+  | 'STATIC_ANALYSIS_PASSED'
+  | 'VERIFICATION_UNAVAILABLE'
+  | 'HUMAN_REVIEW_REQUIRED'
+  | 'FAILED';
+
+export type CoverageStatus = 'collected' | 'empty' | 'unavailable';
+
+export type TestSynthesisStatus =
+  | 'user-provided'
+  | 'synthesized-behavioral'
+  | 'unavailable-human-tests-required';
+
+export interface SandboxIsolationInfo {
+  level: 'linux-namespace-unprivileged' | 'process-rlimit-only' | 'unavailable';
+  isolatedUser: boolean;
+  networkIsolated: boolean;
+  pidIsolated: boolean;
+  limitsApplied: string[];
+  limitations: string[];
+}
+
 export interface AstReport {
   syntaxValid: boolean;
   durationMs: number;
   findings: AstFinding[];
   functions?: FunctionMetric[];
   callGraph?: CallGraphEdge[];
+  analysisKind?: AnalysisKind;
+  parserTool?: string;
 }
 
 export interface TestCaseResult {
@@ -61,6 +95,8 @@ export interface TestRunResult {
   errorLine: number | null;
   traceback: string | null;
   tests: TestCaseResult[];
+  executionKind?: 'dynamic-sandbox' | 'static-only' | 'execution-unavailable';
+  outputTruncated?: boolean;
 }
 
 export interface SbflLineRanking {
@@ -78,6 +114,8 @@ export interface SbflSpectrum {
   totalFailed: number;
   tests: Array<{ name: string; status: 'passed' | 'failed' }>;
   rankings: SbflLineRanking[];
+  coverageStatus?: CoverageStatus;
+  coverageNote?: string;
 }
 
 export interface AprMutantEvaluation {
@@ -189,6 +227,7 @@ export interface VoiceNote {
 }
 
 export interface AnalysisResponse {
+  analysisId?: string;
   filename: string;
   testFilename: string;
   language?: string;
@@ -204,6 +243,20 @@ export interface AnalysisResponse {
   diff: DiffData;
   confidence: ConfidenceBreakdown;
   trustVerdict: TrustVerdict;
+  verificationMode?: VerificationMode;
+  verificationStatus?: VerificationStatus;
+  originalSourceHash?: string;
+  analysisKind?: AnalysisKind;
+  testSynthesisStatus?: TestSynthesisStatus;
+  sandboxIsolation?: SandboxIsolationInfo;
+  remainingUncertainty?: string[];
+  auditStorageMode?: 'client-local-only' | 'backend-append-only';
+  graphRagContext?: {
+    used: boolean;
+    projectId?: string;
+    relatedEntitiesCount: number;
+    summary?: string;
+  };
   unifiedFindings?: UnifiedBugFinding[];
   aiScanStatus?: AiScanStatus;
 }

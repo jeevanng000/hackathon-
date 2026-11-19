@@ -19,6 +19,7 @@ export interface LanguageOption {
   label: string;
   extensions: string[];
   executionMode: 'sandbox-runtime' | 'static-verifier';
+  analysisKind: 'ast-parser' | 'compiler-diagnostics' | 'heuristic';
   runtimeLabel: string;
 }
 
@@ -28,100 +29,129 @@ export const SUPPORTED_LANGUAGES: LanguageOption[] = [
     label: 'Python',
     extensions: ['.py'],
     executionMode: 'sandbox-runtime',
-    runtimeLabel: 'Python 3 AST + Isolated Subprocess',
+    analysisKind: 'ast-parser',
+    runtimeLabel: 'Python 3 AST + Isolated Namespace Sandbox',
   },
   {
     id: 'javascript',
     label: 'JavaScript',
     extensions: ['.js', '.mjs', '.cjs', '.jsx'],
     executionMode: 'sandbox-runtime',
-    runtimeLabel: 'esbuild + Isolated Node.js Sandbox',
+    analysisKind: 'ast-parser',
+    runtimeLabel: 'esbuild + Acorn AST + Isolated Node.js Sandbox',
   },
   {
     id: 'typescript',
     label: 'TypeScript',
     extensions: ['.ts', '.tsx', '.mts'],
     executionMode: 'sandbox-runtime',
-    runtimeLabel: 'esbuild + Isolated Node.js Sandbox',
+    analysisKind: 'ast-parser',
+    runtimeLabel: 'esbuild + Acorn AST + Isolated Node.js Sandbox',
   },
   {
     id: 'c',
     label: 'C',
     extensions: ['.c', '.h'],
     executionMode: 'sandbox-runtime',
-    runtimeLabel: 'GCC Compiler + Isolated Binary Sandbox',
+    analysisKind: 'compiler-diagnostics',
+    runtimeLabel: 'GCC Compiler Diagnostics + Isolated Binary Sandbox',
   },
   {
     id: 'cpp',
     label: 'C++',
     extensions: ['.cpp', '.cc', '.cxx', '.hpp', '.hh'],
     executionMode: 'sandbox-runtime',
-    runtimeLabel: 'G++ Compiler + Isolated Binary Sandbox',
+    analysisKind: 'compiler-diagnostics',
+    runtimeLabel: 'G++ Compiler Diagnostics + Isolated Binary Sandbox',
   },
   {
     id: 'bash',
     label: 'Bash / Shell',
     extensions: ['.sh', '.bash'],
     executionMode: 'sandbox-runtime',
-    runtimeLabel: 'Bash Syntax + Isolated Shell Sandbox',
+    analysisKind: 'compiler-diagnostics',
+    runtimeLabel: 'Bash Syntax Check + Isolated Shell Sandbox',
   },
   {
     id: 'java',
     label: 'Java',
     extensions: ['.java'],
     executionMode: 'static-verifier',
-    runtimeLabel: 'Universal Static AST / CFG / Taint Verifier',
+    analysisKind: 'heuristic',
+    runtimeLabel: 'Static Heuristic Analysis Only (No Local javac Runtime)',
   },
   {
     id: 'go',
     label: 'Go',
     extensions: ['.go'],
     executionMode: 'static-verifier',
-    runtimeLabel: 'Universal Static AST / CFG / Taint Verifier',
+    analysisKind: 'heuristic',
+    runtimeLabel: 'Static Heuristic Analysis Only (No Local Go Runtime)',
   },
   {
     id: 'rust',
     label: 'Rust',
     extensions: ['.rs'],
     executionMode: 'static-verifier',
-    runtimeLabel: 'Universal Static AST / CFG / Taint Verifier',
+    analysisKind: 'heuristic',
+    runtimeLabel: 'Static Heuristic Analysis Only (No Local rustc Runtime)',
   },
   {
     id: 'csharp',
     label: 'C#',
     extensions: ['.cs'],
     executionMode: 'static-verifier',
-    runtimeLabel: 'Universal Static AST / CFG / Taint Verifier',
+    analysisKind: 'heuristic',
+    runtimeLabel: 'Static Heuristic Analysis Only (No Local .NET Runtime)',
   },
   {
     id: 'php',
     label: 'PHP',
     extensions: ['.php'],
     executionMode: 'static-verifier',
-    runtimeLabel: 'Universal Static AST / CFG / Taint Verifier',
+    analysisKind: 'heuristic',
+    runtimeLabel: 'Static Heuristic Analysis Only (No Local PHP Runtime)',
   },
   {
     id: 'ruby',
     label: 'Ruby',
     extensions: ['.rb'],
     executionMode: 'static-verifier',
-    runtimeLabel: 'Universal Static AST / CFG / Taint Verifier',
+    analysisKind: 'heuristic',
+    runtimeLabel: 'Static Heuristic Analysis Only (No Local Ruby Runtime)',
   },
   {
     id: 'sql',
     label: 'SQL',
     extensions: ['.sql'],
     executionMode: 'static-verifier',
-    runtimeLabel: 'Universal Static Query / Taint Verifier',
+    analysisKind: 'heuristic',
+    runtimeLabel: 'Static Heuristic SQL Query Analysis Only',
   },
   {
     id: 'generic',
     label: 'Other / Generic',
     extensions: ['.kt', '.swift', '.scala', '.dart', '.lua', '.r', '.pl', '.txt'],
     executionMode: 'static-verifier',
-    runtimeLabel: 'Universal Multi-Language Static Verifier',
+    analysisKind: 'heuristic',
+    runtimeLabel: 'Static Heuristic Analysis Only (No Local Runtime)',
   },
 ];
+
+const SUPPORTED_LANGUAGE_SET = new Set<string>(SUPPORTED_LANGUAGES.map((l) => l.id));
+
+export function isSupportedLanguage(value: unknown): value is SupportedLanguage {
+  return typeof value === 'string' && SUPPORTED_LANGUAGE_SET.has(value);
+}
+
+export const EXECUTABLE_SANDBOX_LANGUAGES: ReadonlySet<SupportedLanguage> = new Set([
+  'python',
+  'javascript',
+  'typescript',
+  'c',
+  'cpp',
+  'bash',
+]);
 
 export function detectLanguageFromFilename(filename: string): SupportedLanguage {
   const lower = (filename || '').trim().toLowerCase();
