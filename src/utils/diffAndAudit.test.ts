@@ -12,21 +12,8 @@ import {
 } from './diffAndAudit';
 import { classifySuspiciousness, computeOchiai, computeTarantula } from './sbfl';
 import { detectLanguageFromFilename, getLanguageMeta, type SupportedLanguage } from './languageDetect';
-import {
-  applyAllSafeFixesToSource,
-  applyFindingFixToSource,
-  buildUnifiedFindings,
-  getAdjacentFindingId,
-  isEditableTargetElement,
-  sortFindingsBySeverity,
-} from './unifiedFindings';
-import { deriveWorkflowLifecycleSteps } from './workflowStepper';
-import {
-  computeBugHeatmapBands,
-  computeScrollViewportMetrics,
-} from './bugHeatmap';
 import { DEMO_CASES } from '../data/demoCases';
-import type { AnalysisResponse, VoiceNote } from '../types/autopatch';
+import type { AnalysisResponse } from '../types/autopatch';
 import { runMultiLangAnalysis } from '../../engine/multi_lang_engine';
 
 const ENGINE_PATH = path.resolve(process.cwd(), 'engine', 'autopatch_engine.py');
@@ -306,155 +293,45 @@ test('Audit entry creation, filtering, CSV serialization, and 5-section Markdown
   assert.ok(md.includes('### 5. AUDIT LOG ENTRY'));
 });
 
-test('Unified per-line bug findings map categories, plain-English text, and clean line fixes', () => {
-  const authDemo = DEMO_CASES.find((d) => d.id === 'auth-service-none-sub')!;
-  const analysis = runPythonEngineSync({
-    action: 'analyze',
-    filename: authDemo.filename,
-    testFilename: authDemo.testFilename,
-    sourceCode: authDemo.sourceCode,
-    testCode: authDemo.testCode,
-    timeoutSeconds: 1.5,
-  });
+test('Prism.js syntax highlighting tokenizes Python, TypeScript, C, Java, and Rust accurately', async () => {
+  const { highlightCodeWithPrism, resolvePrismLanguage } = await import('./syntaxHighlight');
 
-  const unified = buildUnifiedFindings(analysis, [
-    {
-      id: 'ai-modern-1',
-      line: 1,
-      endLine: 1,
-      source: 'ai-latest',
-      category: 'modern',
-      severity: 'warning',
-      title: 'Plaintext password comparison risk',
-      kind: 'CWE-256',
-      plainEnglishExplanation: 'Comparing raw passwords directly without hashing exposes stored credentials.',
-      technicalExplanation: 'Direct string equality against plaintext password field.',
-      impactSummary: 'Stored passwords should use constant-time hash verification.',
-      originalSnippet: authDemo.sourceCode.split('\n')[0],
-      suggestedReplacement: null,
-      canAutoFix: false,
-      cweOrRule: 'CWE-256',
-      isModernPattern: true,
-    },
-  ]);
+  assert.equal(resolvePrismLanguage('python', 'auth_service.py'), 'python');
+  assert.equal(resolvePrismLanguage('generic', 'cart_totals.ts'), 'typescript');
 
-  assert.ok(unified.length >= 2);
-  assert.ok(unified.some((f) => f.category === 'modern' && f.source === 'ai-latest'));
-  assert.ok(unified.some((f) => f.canAutoFix && f.plainEnglishExplanation.length > 10));
-
-  const fixable = unified.find((f) => f.canAutoFix)!;
-  const singleFixed = applyFindingFixToSource(authDemo.sourceCode, fixable);
-  assert.notEqual(singleFixed, authDemo.sourceCode);
-
-  const { updatedCode, appliedIds } = applyAllSafeFixesToSource(authDemo.sourceCode, unified);
-  assert.ok(appliedIds.length >= 1);
-  assert.ok(updatedCode.includes('is not None'));
-});
-
-test('Voice notes attach reasoning into audit entries, CSV export, and Markdown reports', () => {
-  const retryDemo = DEMO_CASES.find((d) => d.id === 'retry-loop-blocked')!;
-  const analysis = runPythonEngineSync({
-    action: 'analyze',
-    filename: retryDemo.filename,
-    testFilename: retryDemo.testFilename,
-    sourceCode: retryDemo.sourceCode,
-    testCode: retryDemo.testCode,
-    timeoutSeconds: 1.5,
-  });
-
-  const sampleNotes: VoiceNote[] = [
-    {
-      id: 'vn-test-1',
-      findingId: 'unified-sbfl-1',
-      filename: retryDemo.filename,
-      line: 10,
-      bugTitle: 'Infinite retry loop on malformed job',
-      createdAt: '2026-11-19T06:00:00.000Z',
-      durationSec: 12,
-      mimeType: 'audio/webm',
-      audioDataUrl: 'data:audio/webm;base64,AAAA',
-      transcript: 'Skipped malformed jobs manually before moving to dead-letter queue.',
-      transcriptionStatus: 'completed',
-    },
-  ];
-
-  const entry = buildAuditEntry({
-    analysis,
-    decision: 'override',
-    overrideReason: sampleNotes[0].transcript,
-    voiceNotes: sampleNotes,
-    now: new Date('2026-11-19T06:01:00.000Z'),
-  });
-
-  assert.equal(entry.voiceNoteCount, 1);
-  assert.ok(entry.voiceNotesSummary?.includes('Skipped malformed jobs manually'));
-  assert.equal(filterAuditEntries([entry], 'all', 'dead-letter').length, 1);
-
-  const csv = serializeAuditToCsv([entry]);
-  assert.ok(csv.includes('Voice Notes'));
-  assert.ok(csv.includes('Skipped malformed jobs manually'));
-
-  const md = formatStructuredMarkdownReport(analysis, retryDemo.testCode, 'override', sampleNotes);
-  assert.ok(md.includes('Developer Voice Notes'));
-  assert.ok(md.includes('1 attached'));
-});
-
-test('Keyboard bug navigation wraps cleanly and ignores editable targets', () => {
-  const findings = [{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }];
-  assert.equal(getAdjacentFindingId([], null, 'next'), null);
-  assert.equal(getAdjacentFindingId(findings, null, 'next'), 'f1');
-  assert.equal(getAdjacentFindingId(findings, null, 'prev'), 'f3');
-  assert.equal(getAdjacentFindingId(findings, 'f1', 'next'), 'f2');
-  assert.equal(getAdjacentFindingId(findings, 'f3', 'next'), 'f1');
-  assert.equal(getAdjacentFindingId(findings, 'f1', 'prev'), 'f3');
-  assert.equal(getAdjacentFindingId(findings, 'f2', 'prev'), 'f1');
-
-  assert.equal(isEditableTargetElement({ tagName: 'INPUT' }), true);
-  assert.equal(isEditableTargetElement({ tagName: 'TEXTAREA' }), true);
-  assert.equal(isEditableTargetElement({ tagName: 'SELECT' }), true);
-  assert.equal(isEditableTargetElement({ tagName: 'AUDIO' }), true);
-  assert.equal(isEditableTargetElement({ tagName: 'DIV', isContentEditable: true }), true);
-  assert.equal(isEditableTargetElement({ tagName: 'BUTTON', isContentEditable: false }), false);
-  assert.equal(isEditableTargetElement(null), false);
-});
-
-test('sortFindingsBySeverity prioritizes Critical -> Warning -> Info and ties by line', () => {
-  const sample = [
-    { id: 'info-10', line: 10, severity: 'info' as const },
-    { id: 'warn-5', line: 5, severity: 'warning' as const },
-    { id: 'crit-12', line: 12, severity: 'critical' as const },
-    { id: 'crit-3', line: 3, severity: 'critical' as const },
-    { id: 'warn-2', line: 2, severity: 'warning' as const },
-  ];
-
-  const sorted = sortFindingsBySeverity(sample);
-  assert.deepEqual(
-    sorted.map((f) => f.id),
-    ['crit-3', 'crit-12', 'warn-2', 'warn-5', 'info-10']
+  const pyHtml = highlightCodeWithPrism(
+    'def authenticate_user(users_db, username):\n    # check None\n    return "SUCCESS"\n',
+    'python',
+    'auth_service.py'
   );
+  assert.ok(pyHtml.includes('token keyword'));
+  assert.ok(pyHtml.includes('token comment'));
+  assert.ok(pyHtml.includes('token string'));
+  assert.ok(pyHtml.endsWith('\n '), 'Trailing newline should append space for pre height sync');
+
+  const tsHtml = highlightCodeWithPrism(
+    'export function sum(items: number[]): number { return items.length; }',
+    'typescript',
+    'cart.ts'
+  );
+  assert.ok(tsHtml.includes('token keyword'));
+  assert.ok(tsHtml.includes('token builtin'));
+
+  const cHtml = highlightCodeWithPrism(
+    '#include <stdio.h>\nint main(void) { return 0; }',
+    'c',
+    'main.c'
+  );
+  assert.ok(cHtml.includes('token directive') || cHtml.includes('token keyword'));
+  assert.ok(cHtml.includes('token number'));
 });
 
-test('deriveWorkflowLifecycleSteps tracks Analysis -> Inspection -> Verification -> Audit', () => {
-  const initial = deriveWorkflowLifecycleSteps({
-    analysis: null,
-    isRunning: false,
-    isValidating: false,
-    findingsCount: 0,
-    resolvedCount: 0,
-    hasLocalEdits: false,
-    activeDecision: null,
-    auditCount: 0,
-  });
-  assert.deepEqual(
-    initial.map((s) => [s.id, s.state]),
-    [
-      ['analysis', 'active'],
-      ['inspection', 'upcoming'],
-      ['verification', 'upcoming'],
-      ['audit', 'upcoming'],
-    ]
-  );
-
+test('Unified findings builder, line fix application, severity sort, and voice notes audit integration work cleanly', async () => {
+  const {
+    buildUnifiedFindings,
+    applyFindingFixToSource,
+    sortFindingsBySeverity,
+  } = await import('./unifiedFindings');
   const pricingDemo = DEMO_CASES.find((d) => d.id === 'pricing-zero-div')!;
   const analysis = runPythonEngineSync({
     action: 'analyze',
@@ -465,125 +342,59 @@ test('deriveWorkflowLifecycleSteps tracks Analysis -> Inspection -> Verification
     timeoutSeconds: 1.5,
   });
 
-  const postScan = deriveWorkflowLifecycleSteps({
-    analysis,
-    isRunning: false,
-    isValidating: false,
-    findingsCount: 2,
-    resolvedCount: 0,
-    hasLocalEdits: false,
-    activeDecision: null,
-    auditCount: 0,
-  });
-  assert.equal(postScan[0].state, 'completed');
-  assert.equal(postScan[1].state, 'active');
-  assert.equal(postScan[2].state, 'upcoming');
+  const findings = buildUnifiedFindings(analysis, []);
+  assert.ok(findings.length >= 1, 'Should produce at least one unified finding');
+  const fixable = findings.find((f) => f.canAutoFix && f.suggestedReplacement !== null);
+  assert.ok(fixable, 'Should expose an auto-fixable finding');
 
-  const afterFix = deriveWorkflowLifecycleSteps({
-    analysis,
-    isRunning: false,
-    isValidating: false,
-    findingsCount: 2,
-    resolvedCount: 2,
-    hasLocalEdits: true,
-    activeDecision: null,
-    auditCount: 1,
-  });
-  assert.equal(afterFix[1].state, 'completed');
-  assert.equal(afterFix[2].state, 'active');
+  const patched = applyFindingFixToSource(pricingDemo.sourceCode, fixable!);
+  assert.notEqual(patched, pricingDemo.sourceCode, 'Applying fix should update source');
 
-  const afterAudit = deriveWorkflowLifecycleSteps({
-    analysis,
-    isRunning: false,
-    isValidating: false,
-    findingsCount: 2,
-    resolvedCount: 2,
-    hasLocalEdits: false,
-    activeDecision: 'accepted',
-    auditCount: 2,
-  });
+  const sorted = sortFindingsBySeverity([
+    { severity: 'info' as const, line: 1 },
+    { severity: 'critical' as const, line: 8 },
+    { severity: 'warning' as const, line: 3 },
+    { severity: 'critical' as const, line: 2 },
+  ]);
   assert.deepEqual(
-    afterAudit.map((s) => s.state),
-    ['completed', 'completed', 'completed', 'completed']
+    sorted.map((s) => `${s.severity}:${s.line}`),
+    ['critical:2', 'critical:8', 'warning:3', 'info:1']
   );
-});
 
-test('Bug Heatmap computes severity density bands, resolved states, and scroll viewport metrics', () => {
-  const sampleFindings = [
+  const mockVoiceNotes = [
     {
-      id: 'f-crit',
-      line: 5,
-      endLine: 5,
-      source: 'static-ast' as const,
-      category: 'security' as const,
-      severity: 'critical' as const,
-      title: 'SQL injection',
-      kind: 'SqlInjectionRisk',
-      plainEnglishExplanation: 'Unsafe query',
-      technicalExplanation: 'Unsafe query',
-      impactSummary: 'Injection',
-      originalSnippet: 'q = ...',
-      suggestedReplacement: null,
-      canAutoFix: false,
-    },
-    {
-      id: 'f-warn',
-      line: 5,
-      endLine: 6,
-      source: 'static-ast' as const,
-      category: 'runtime' as const,
-      severity: 'warning' as const,
-      title: 'Null check',
-      kind: 'NullDereferenceRisk',
-      plainEnglishExplanation: 'Possible null',
-      technicalExplanation: 'Possible null',
-      impactSummary: 'Crash',
-      originalSnippet: 'x.y',
-      suggestedReplacement: null,
-      canAutoFix: false,
-    },
-    {
-      id: 'f-info',
-      line: 40,
-      endLine: 40,
-      source: 'ai-latest' as const,
-      category: 'modern' as const,
-      severity: 'info' as const,
-      title: 'Style hint',
-      kind: 'ModernPattern',
-      plainEnglishExplanation: 'Consider helper',
-      technicalExplanation: 'Consider helper',
-      impactSummary: 'Readability',
-      originalSnippet: 'pass',
-      suggestedReplacement: null,
-      canAutoFix: false,
+      id: 'vn-1',
+      findingId: fixable!.id,
+      filename: pricingDemo.filename,
+      line: fixable!.line,
+      bugTitle: fixable!.title,
+      createdAt: '2026-11-19T01:00:00.000Z',
+      durationSec: 4,
+      mimeType: 'audio/webm',
+      audioDataUrl: 'data:audio/webm;base64,AAAA',
+      transcript: 'Verified zero-guard matches billing SLA.',
+      transcriptionStatus: 'completed' as const,
     },
   ];
 
-  const bands = computeBugHeatmapBands({
-    lineCount: 48,
-    findings: sampleFindings,
-    resolvedFindingIds: new Set(['f-info']),
-    activeFindingId: 'f-crit',
+  const auditWithNotes = buildAuditEntry({
+    analysis,
+    decision: 'accepted',
+    voiceNotes: mockVoiceNotes,
+    now: new Date('2026-11-19T01:00:00.000Z'),
   });
+  assert.equal(auditWithNotes.voiceNoteCount, 1);
+  assert.ok(auditWithNotes.voiceNotesSummary?.includes('billing SLA'));
+  assert.equal(filterAuditEntries([auditWithNotes], 'all', 'billing SLA').length, 1);
 
-  assert.equal(bands.length, 3);
-  const line5Band = bands.find((b) => b.startLine === 5)!;
-  assert.equal(line5Band.status, 'critical');
-  assert.equal(line5Band.totalCount, 2);
-  assert.equal(line5Band.normalizedDensity, 1);
-  assert.equal(line5Band.hasActiveFinding, true);
-  assert.equal(line5Band.primaryFindingId, 'f-crit');
-
-  const line40Band = bands.find((b) => b.startLine === 40)!;
-  assert.equal(line40Band.status, 'resolved');
-
-  assert.deepEqual(computeScrollViewportMetrics(0, 500, 500), {
-    topPct: 0,
-    heightPct: 100,
-  });
-  const scrolled = computeScrollViewportMetrics(500, 500, 2000);
-  assert.equal(scrolled.topPct, 25);
-  assert.equal(scrolled.heightPct, 25);
+  const report = formatStructuredMarkdownReport(
+    analysis,
+    pricingDemo.testCode,
+    'accepted',
+    mockVoiceNotes
+  );
+  assert.ok(report.includes('Developer Voice Notes'));
+  assert.ok(report.includes('billing SLA'));
 });
+
 

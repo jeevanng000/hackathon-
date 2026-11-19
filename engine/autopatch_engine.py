@@ -193,11 +193,15 @@ class StaticAnalyzer(ast.NodeVisitor):
                         "snippet": self._snippet(node.lineno),
                     })
 
-                # 3. String-interpolated SQL inside .execute(f"SELECT ...")
-                if isinstance(node.func, ast.Attribute) and node.func.attr == "execute" and node.args:
+                # 3. String-interpolated SQL or Unbounded Large-Database SELECT * inside .execute(...) / .query(...)
+                if isinstance(node.func, ast.Attribute) and node.func.attr in ("execute", "query", "executemany") and node.args:
                     first_arg = node.args[0]
                     arg_src = ast.unparse(first_arg)
-                    is_interpolated = isinstance(first_arg, (ast.JoinedStr, ast.BinOp))
+                    is_interpolated = isinstance(first_arg, (ast.JoinedStr, ast.BinOp)) or (
+                        isinstance(first_arg, ast.Call)
+                        and isinstance(first_arg.func, ast.Attribute)
+                        and first_arg.func.attr == "format"
+                    )
                     if is_interpolated and SQL_KEYWORDS_RE.search(arg_src):
                         self.findings.append({
                             "id": f"taint-sql-{node.lineno}",
@@ -206,8 +210,24 @@ class StaticAnalyzer(ast.NodeVisitor):
                             "severity": "error",
                             "line": node.lineno,
                             "function": func.name,
-                            "sink": "cursor.execute",
-                            "message": f"Unsanitized string interpolation in SQL execute() in '{func.name}'. Use parameterized placeholders.",
+                            "sink": f"cursor.{node.func.attr}",
+                            "message": f"Unsanitized string interpolation in SQL {node.func.attr}() in '{func.name}'. Use parameterized '?' placeholders.",
+                            "snippet": self._snippet(node.lineno),
+                        })
+                    elif (
+                        isinstance(first_arg, ast.Constant)
+                        and isinstance(first_arg.value, str)
+                        and re.search(r"^\s*SELECT\s+\*\s+FROM\s+\w+\s*;?\s*$", first_arg.value, re.I)
+                    ):
+                        self.findings.append({
+                            "id": f"db-unbounded-{node.lineno}",
+                            "kind": "UnboundedQueryRisk",
+                            "category": "runtime",
+                            "severity": "error",
+                            "line": node.lineno,
+                            "function": func.name,
+                            "sink": f"cursor.{node.func.attr}",
+                            "message": f"Unbounded 'SELECT * FROM ...' query on line {node.lineno} in '{func.name}' lacks a LIMIT clause, risking Out-Of-Memory failure on large databases.",
                             "snippet": self._snippet(node.lineno),
                         })
 
@@ -227,16 +247,21 @@ class StaticAnalyzer(ast.NodeVisitor):
         for callee in calls:
             self.call_edges.append({"caller": node.name, "callee": callee})
 
-        for default in node.args.defaults:
+        num_args = len(node.args.args)
+        num_defaults = len(node.args.defaults)
+        for idx_def, default in enumerate(node.args.defaults):
             if isinstance(default, (ast.List, ast.Dict, ast.Set)):
+                arg_Idx = num_args - num_defaults + idx_def
+                arg_name = node.args.args[arg_Idx].arg if 0 <= arg_Idx < num_args else "items"
                 self.findings.append({
-                    "id": f"ast-mut-{node.lineno}",
+                    "id": f"ast-mut-{node.lineno}-{arg_name}",
                     "kind": "MutableDefaultRisk",
-                    "category": "quality",
-                    "severity": "warning",
+                    "category": "runtime",
+                    "severity": "error",
                     "line": node.lineno,
                     "function": node.name,
-                    "message": f"Function '{node.name}' uses a mutable default argument.",
+                    "variable": arg_name,
+                    "message": f"Function '{node.name}' uses a shared mutable default argument for '{arg_name}', leaking state across calls.",
                     "snippet": self._snippet(node.lineno),
                 })
 
@@ -1456,6 +1481,117 @@ def generate_candidate_patch(
             except SyntaxError:
                 pass
 
+    # 4c. Large Database / SQL Injection / Unbounded Query & Mutable Default Argument repairs
+    if any(f["kind"] in ("SqlInjectionRisk", "UnboundedQueryRisk", "MutableDefaultRisk") for f in findings):
+        repaired_lines = list(lines)
+        db_notes: List[str] = []
+        primary_kind = "DatabaseRisk"
+        primary_rule = "AST_DATABASE_SAFETY_GUARD"
+        primary_line = findings[0]["line"]
+        line_shift = 0
+
+        for f in findings:
+            ln_idx = f["line"] - 1 + line_shift
+            if not (0 <= ln_idx < len(repaired_lines)):
+                continue
+            orig_ln = repaired_lines[ln_idx]
+
+            if f["kind"] == "SqlInjectionRisk":
+                # Convert execute(f"SELECT ... WHERE col = {var}") -> execute("SELECT ... WHERE col = ?", (var,))
+                fstr_match = re.search(r'(\.execute\s*\(\s*)f(["\'])(.+?)\{([A-Za-z_][A-Za-z0-9_.]*)\}(.*?)\2\s*\)', orig_ln)
+                concat_match = re.search(r'(\.execute\s*\(\s*)(["\'])(.+?)\2\s*\+\s*([A-Za-z_][A-Za-z0-9_().]*)\s*\)', orig_ln)
+                if fstr_match:
+                    prefix, quote, sql_pre, var_expr, sql_post = fstr_match.groups()
+                    clean_post = sql_post.replace("'", "")
+                    repaired_lines[ln_idx] = (
+                        orig_ln[: fstr_match.start()]
+                        + f'{prefix}{quote}{sql_pre}?{clean_post}{quote}, ({var_expr},))'
+                        + orig_ln[fstr_match.end() :]
+                    )
+                    db_notes.append(
+                        f"Converted f-string SQL interpolation to parameterized '?' query with tuple parameter '({var_expr},)' on line {f['line']}."
+                    )
+                    primary_kind = "SqlInjectionRisk"
+                    primary_rule = "AST_TAINT_SQL_PARAMETERIZE"
+                    primary_line = f["line"]
+                elif concat_match:
+                    prefix, quote, sql_pre, var_expr = concat_match.groups()
+                    repaired_lines[ln_idx] = (
+                        orig_ln[: concat_match.start()]
+                        + f'{prefix}{quote}{sql_pre}?{quote}, ({var_expr},))'
+                        + orig_ln[concat_match.end() :]
+                    )
+                    db_notes.append(
+                        f"Converted string-concatenated SQL query to parameterized '?' placeholder on line {f['line']}."
+                    )
+                    primary_kind = "SqlInjectionRisk"
+                    primary_rule = "AST_TAINT_SQL_PARAMETERIZE"
+                    primary_line = f["line"]
+
+            elif f["kind"] == "UnboundedQueryRisk":
+                updated_ln = re.sub(
+                    r"(SELECT\s+\*\s+FROM\s+\w+)\s*;?",
+                    r"\1 LIMIT 1000",
+                    orig_ln,
+                    flags=re.I,
+                )
+                if updated_ln != orig_ln:
+                    repaired_lines[ln_idx] = updated_ln
+                    db_notes.append(
+                        f"Added 'LIMIT 1000' safety cap to unbounded 'SELECT *' query on line {f['line']} to prevent large-database OOM crashes."
+                    )
+                    primary_kind = "UnboundedQueryRisk"
+                    primary_rule = "AST_DB_BOUNDED_LIMIT"
+                    primary_line = f["line"]
+
+            elif f["kind"] == "MutableDefaultRisk":
+                arg_name = f.get("variable") or "items"
+                updated_ln = re.sub(
+                    rf"(\b{re.escape(arg_name)}\s*=\s*)(\[\s*\]|\{{\s*\}})",
+                    r"\1None",
+                    orig_ln,
+                )
+                if updated_ln != orig_ln:
+                    is_dict = "{}" in orig_ln
+                    init_val = "{}" if is_dict else "[]"
+                    repaired_lines[ln_idx] = updated_ln
+                    body_indent = _find_indent(orig_ln) + "    "
+                    guard_lines = [
+                        f"{body_indent}if {arg_name} is None:",
+                        f"{body_indent}    {arg_name} = {init_val}",
+                    ]
+                    repaired_lines[ln_idx + 1 : ln_idx + 1] = guard_lines
+                    line_shift += len(guard_lines)
+                    db_notes.append(
+                        f"Replaced shared mutable default '{arg_name}={init_val}' with '{arg_name}=None' and per-call initialization on line {f['line']}."
+                    )
+                    primary_kind = "MutableDefaultRisk"
+                    primary_rule = "AST_MUTABLE_DEFAULT_FIX"
+                    primary_line = f["line"]
+
+        if db_notes:
+            candidate = "\n".join(repaired_lines) + ("\n" if source_code.endswith("\n") else "")
+            try:
+                ast.parse(candidate)
+                return (
+                    {
+                        "patchedCode": candidate,
+                        "patchApplied": True,
+                        "aprStrategy": "Template-Based APR (AST Database & State Safety)",
+                        "ruleId": primary_rule,
+                        "strategy": " ".join(db_notes),
+                        "targetLine": primary_line,
+                        "bugType": primary_kind,
+                        "rootCause": findings[0]["message"],
+                        "requiresHumanReview": False,
+                        "evaluatedMutants": [],
+                        "durationMs": round((time.perf_counter() - start) * 1000, 2),
+                    },
+                    None,
+                )
+            except SyntaxError:
+                pass
+
     # 5. Infinite Loop / Timeout — Trust Layer blocks blind auto-patching
     if baseline.get("timedOut") or err_type == "TimeoutError" or any(f["kind"] == "InfiniteLoopRisk" for f in findings):
         loop_finding = next((f for f in findings if f["kind"] == "InfiniteLoopRisk"), None)
@@ -1623,6 +1759,88 @@ def evaluate_trust_verdict(
     ):
         return "verified"
     return "blocked"
+
+
+def build_eli10_explanation(bug_type: str, target_line: Optional[int], filename: str, root_cause: str, strategy: str) -> Dict[str, str]:
+    kind = (bug_type or "Defect").lower()
+    line_label = f"line {target_line}" if target_line else "this file"
+
+    if "zerodivision" in kind:
+        return {
+            "title": "Sharing Cookies Among Zero Friends",
+            "analogy": "Imagine trying to split a plate of 10 cookies equally among 0 people sitting at a table. Your calculator freezes because there is nobody there to receive a cookie!",
+            "whatWentWrong": f"On {line_label} of {filename}, the code divided a number by zero when an empty list or zero count arrived.",
+            "howWeFixedIt": "We placed a friendly bouncer right before the math: if the count is 0, it immediately answers 0 without dividing.",
+        }
+    if "null" in kind or "typeerror" in kind or "attributeerror" in kind:
+        return {
+            "title": "The Empty School Locker Trap",
+            "analogy": "Imagine asking the school office for locker #99. Because nobody owns locker #99, they hand you an empty sticky note ('None'). Then you try to unlock the sticky note with a metal key!",
+            "whatWentWrong": f"On {line_label} of {filename}, the code looked up a record that didn't exist (getting back empty 'None') and tried to read data inside it anyway.",
+            "howWeFixedIt": "We taught the code to check if the locker actually exists first ('is not None') before trying to open it.",
+        }
+    if "keyerror" in kind:
+        return {
+            "title": "Opening a Folder That Is Not in the Cabinet",
+            "analogy": "Imagine reaching into a filing cabinet to replace a page inside 'Bob\\'s Folder' without checking if Bob even has a folder yet — papers fly everywhere!",
+            "whatWentWrong": f"On {line_label} of {filename}, the code tried to update or read a dictionary key before checking if that key was inside the database.",
+            "howWeFixedIt": "We added a quick check at the cabinet door: if the name is not in the database, safely stop and return False.",
+        }
+    if "index" in kind or "bound" in kind:
+        return {
+            "title": "Stepping One Plank Past the End of the Pier",
+            "analogy": "Imagine a wooden pier with 5 planks numbered 0, 1, 2, 3, and 4. The code told a robot to walk 6 steps onto plank #5 — splash right into the water!",
+            "whatWentWrong": f"On {line_label} of {filename}, the loop counted one step too far (using '<=' or '+ 1' past the end of the list).",
+            "howWeFixedIt": "We shortened the walk by 1 step so the loop always stops safely on the very last real item.",
+        }
+    if "sql" in kind or "taint" in kind or "command" in kind:
+        return {
+            "title": "The Fake Hall-Pass Trick",
+            "analogy": "Imagine a school guard who reads a visitor's nametag out loud as an order. A sneaky visitor writes 'Bob — AND UNLOCK THE VAULT' on their nametag, and the guard obeys it!",
+            "whatWentWrong": f"On {line_label} of {filename}, untrusted user text was glued directly into a database or system command.",
+            "howWeFixedIt": "We locked the user input inside a sealed ID badge (a parameterized '?' placeholder / safe parser) so it is treated strictly as data, never as a command.",
+        }
+    if "unboundedquery" in kind or "database" in kind:
+        return {
+            "title": "The 10-Million-Pizza Dump Truck",
+            "analogy": "Imagine ordering dinner from a mega-warehouse, and instead of sending 1 box, they dump all 10 million frozen pizzas onto your porch at once — crushing the house!",
+            "whatWentWrong": f"On {line_label} of {filename}, the database query asked for every single row in a massive table with no row limit.",
+            "howWeFixedIt": "We attached a safety valve ('LIMIT 1000') so the database sends a fast, safe page of records instead of crashing memory.",
+        }
+    if "mutabledefault" in kind:
+        return {
+            "title": "The Shared Cereal Bowl",
+            "analogy": "Imagine a diner that gives every new customer the exact same cereal bowl without washing it — customer #2 finds customer #1's leftover Cheerios floating in their milk!",
+            "whatWentWrong": f"On {line_label} of {filename}, a Python function used a shared list or dictionary '[]' as a default argument across every call.",
+            "howWeFixedIt": "We changed the default to 'None' and hand out a brand-new, clean list inside the function every time someone calls it.",
+        }
+    if "loop" in kind or "timeout" in kind:
+        return {
+            "title": "The Hamster Wheel With No Exit Door",
+            "analogy": "Imagine a mail sorter who puts any package with a smudged label right back onto the front of the conveyor belt forever — the belt never stops spinning!",
+            "whatWentWrong": f"On {line_label} of {filename}, a loop kept repeating without a counter or exit rule, hitting our 2-second safety timer.",
+            "howWeFixedIt": "Our Trust Gate caught the runaway wheel in 2 seconds and paused auto-overwrite so you can choose whether bad items should be skipped or capped.",
+        }
+    if "logic" in kind or "assertion" in kind:
+        return {
+            "title": "The Rollercoaster Height Sign (> vs >=)",
+            "analogy": "Imagine a rollercoaster sign that says 'Must be OVER 100cm to ride', accidentally turning away kids who are EXACTLY 100cm tall!",
+            "whatWentWrong": f"On {line_label} of {filename}, a comparison sign missed the exact boundary number.",
+            "howWeFixedIt": "We tested small comparison flips in our sandbox and swapped the sign so the exact boundary value is included.",
+        }
+    if "syntax" in kind:
+        return {
+            "title": "The Missing Period at the End of a Sentence",
+            "analogy": "Imagine handing a recipe to a chef where a sentence stops mid-air without a colon or closing bracket — the chef pauses before even turning on the stove!",
+            "whatWentWrong": f"On {line_label} of {filename}, a required punctuation mark (colon or parenthesis) was missing or mistyped.",
+            "howWeFixedIt": "We put the missing punctuation mark right back where Python expects it.",
+        }
+    return {
+        "title": "The Loose Lego Brick on the Bridge",
+        "analogy": "Imagine building a Lego bridge where one brick on the support pillar is snapped in sideways — the bridge wobbles as soon as a toy train crosses it!",
+        "whatWentWrong": root_cause or f"On {line_label} of {filename}, an unguarded edge-case input caused the function to fail.",
+        "howWeFixedIt": strategy or "We snapped a defensive guard around the broken line and verified that every test train crosses safely.",
+    }
 
 
 def build_static_or_context_baseline(
@@ -1794,12 +2012,20 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
 
     trust_verdict = evaluate_trust_verdict(baseline, sandbox, patch_info, ast_report)
     confidence = compute_confidence(ast_report, baseline, patch_info, sandbox, diff_data, sbfl)
+    eli10 = build_eli10_explanation(
+        patch_info.get("bugType", "Defect"),
+        patch_info.get("targetLine") or baseline.get("errorLine"),
+        filename,
+        patch_info.get("rootCause", ""),
+        patch_info.get("strategy", ""),
+    )
 
     result: Dict[str, Any] = {
         "filename": filename,
         "testFilename": test_filename,
         "originalCode": source_code,
         "patchedCode": patched_code,
+        "eli10": eli10,
         "astReport": ast_report,
         "baseline": baseline,
         "sbfl": sbfl,
@@ -1851,12 +2077,20 @@ def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:
         diff_data,
         sbfl,
     )
+    eli10 = build_eli10_explanation(
+        patch_info["bugType"],
+        patch_info["targetLine"],
+        filename,
+        patch_info["rootCause"],
+        patch_info["strategy"],
+    )
 
     return {
         "filename": filename,
         "testFilename": test_filename,
         "originalCode": original_code,
         "patchedCode": candidate_code,
+        "eli10": eli10,
         "astReport": ast_report,
         "baseline": baseline,
         "sbfl": sbfl,

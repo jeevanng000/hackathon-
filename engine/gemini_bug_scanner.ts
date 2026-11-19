@@ -91,73 +91,85 @@ export async function runGeminiLatestBugScan(params: {
     .filter(Boolean)
     .join('\n\n');
 
+  const AI_SCAN_TIMEOUT_MS = 4500;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
   try {
-    const response = await client.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        systemInstruction:
-          'You are an expert multi-language security and bug analyzer. Return strictly valid JSON matching the schema. Be concise, accurate, and beginner-friendly in plainEnglishExplanation.',
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              line: { type: Type.INTEGER, description: '1-indexed start line number' },
-              endLine: { type: Type.INTEGER, description: '1-indexed end line number' },
-              category: {
-                type: Type.STRING,
-                description: 'One of: security, runtime, logic, modern',
+    const response = await Promise.race([
+      client.models.generateContent({
+        model: MODEL_NAME,
+        contents: prompt,
+        config: {
+          systemInstruction:
+            'You are an expert multi-language security and bug analyzer. Return strictly valid JSON matching the schema. Be concise, accurate, and beginner-friendly in plainEnglishExplanation.',
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                line: { type: Type.INTEGER, description: '1-indexed start line number' },
+                endLine: { type: Type.INTEGER, description: '1-indexed end line number' },
+                category: {
+                  type: Type.STRING,
+                  description: 'One of: security, runtime, logic, modern',
+                },
+                severity: {
+                  type: Type.STRING,
+                  description: 'One of: critical, warning, info',
+                },
+                title: { type: Type.STRING, description: 'Short 4-8 word bug title' },
+                cweOrRule: {
+                  type: Type.STRING,
+                  description: 'Short rule or CWE identifier, e.g. CWE-89 or AsyncRace',
+                },
+                plainEnglishExplanation: {
+                  type: Type.STRING,
+                  description: 'Beginner-friendly 1-2 sentence explanation without heavy jargon',
+                },
+                technicalExplanation: {
+                  type: Type.STRING,
+                  description: 'Precise engineering explanation of the bug or vulnerability',
+                },
+                impactSummary: {
+                  type: Type.STRING,
+                  description: 'Short 1-sentence impact summary',
+                },
+                suggestedReplacement: {
+                  type: Type.STRING,
+                  description: 'Exact replacement lines (preserving indentation) or empty string if manual',
+                },
+                canAutoFix: {
+                  type: Type.BOOLEAN,
+                  description: 'True only if suggestedReplacement cleanly replaces lines line..endLine',
+                },
               },
-              severity: {
-                type: Type.STRING,
-                description: 'One of: critical, warning, info',
-              },
-              title: { type: Type.STRING, description: 'Short 4-8 word bug title' },
-              cweOrRule: {
-                type: Type.STRING,
-                description: 'Short rule or CWE identifier, e.g. CWE-89 or AsyncRace',
-              },
-              plainEnglishExplanation: {
-                type: Type.STRING,
-                description: 'Beginner-friendly 1-2 sentence explanation without heavy jargon',
-              },
-              technicalExplanation: {
-                type: Type.STRING,
-                description: 'Precise engineering explanation of the bug or vulnerability',
-              },
-              impactSummary: {
-                type: Type.STRING,
-                description: 'Short 1-sentence impact summary',
-              },
-              suggestedReplacement: {
-                type: Type.STRING,
-                description: 'Exact replacement lines (preserving indentation) or empty string if manual',
-              },
-              canAutoFix: {
-                type: Type.BOOLEAN,
-                description: 'True only if suggestedReplacement cleanly replaces lines line..endLine',
-              },
+              required: [
+                'line',
+                'endLine',
+                'category',
+                'severity',
+                'title',
+                'cweOrRule',
+                'plainEnglishExplanation',
+                'technicalExplanation',
+                'impactSummary',
+                'suggestedReplacement',
+                'canAutoFix',
+              ],
             },
-            required: [
-              'line',
-              'endLine',
-              'category',
-              'severity',
-              'title',
-              'cweOrRule',
-              'plainEnglishExplanation',
-              'technicalExplanation',
-              'impactSummary',
-              'suggestedReplacement',
-              'canAutoFix',
-            ],
           },
         },
-      },
-    });
+      }),
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
+          () => reject(new Error('503 UNAVAILABLE timeout')),
+          AI_SCAN_TIMEOUT_MS
+        );
+      }),
+    ]);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
 
     const rawText = (response.text ?? '[]').trim();
     const parsed = JSON.parse(rawText) as RawAiFinding[];
@@ -204,7 +216,17 @@ export async function runGeminiLatestBugScan(params: {
       },
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    const rawMsg = err instanceof Error ? err.message : String(err);
+    const isOverloaded =
+      /503|UNAVAILABLE|overloaded|high demand/i.test(rawMsg);
+    const isRateLimited = /429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(rawMsg);
+    const friendlyMessage = isOverloaded
+      ? 'AI scan temporarily busy — deterministic AST & sandbox checks completed.'
+      : isRateLimited
+      ? 'AI scan rate-limited — deterministic AST & sandbox checks completed.'
+      : 'Deterministic AST & sandbox checks completed (AI deep scan unavailable).';
+
     return {
       findings: [],
       aiScanStatus: {
@@ -212,7 +234,7 @@ export async function runGeminiLatestBugScan(params: {
         model: MODEL_NAME,
         findingsCount: 0,
         durationMs: Number((performance.now() - t0).toFixed(1)),
-        message: `Live AI scan could not complete (${msg}). Deterministic AST & sandbox checks still ran.`,
+        message: friendlyMessage,
       },
     };
   }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { DEMO_CASES } from './data/demoCases';
 import type {
@@ -97,6 +97,15 @@ export default function App() {
     selectedLanguage === 'auto'
       ? detectLanguageFromFilename(filename)
       : selectedLanguage;
+
+  const mainScrollRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    if (mainScrollRef.current) {
+      mainScrollRef.current.scrollTop = 0;
+    }
+  }, [activeView]);
 
   useEffect(() => {
     try {
@@ -497,7 +506,7 @@ export default function App() {
             }}
           />
 
-          <main className="flex-1 min-w-0 overflow-y-auto">
+          <main ref={mainScrollRef} className="flex-1 min-w-0 overflow-y-auto">
             {/* Mobile view switcher */}
             <nav
               aria-label="Mobile workspace views"

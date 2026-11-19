@@ -135,16 +135,22 @@ export interface ConfidenceBreakdown {
 
 export type TrustVerdict = 'verified' | 'blocked' | 'already_passing';
 
+export interface Eli10Explanation {
+  title: string;
+  analogy: string;
+  whatWentWrong: string;
+  howWeFixedIt: string;
+}
+
 export type BugCategory = 'security' | 'runtime' | 'logic' | 'modern';
 export type BugSeverity = 'critical' | 'warning' | 'info';
-export type BugSource = 'static-ast' | 'sandbox-runtime' | 'ai-latest';
 export type ExplanationMode = 'plain' | 'technical';
 
 export interface UnifiedBugFinding {
   id: string;
   line: number;
   endLine: number;
-  source: BugSource;
+  source: 'static-ast' | 'sandbox-runtime' | 'ai-latest';
   category: BugCategory;
   severity: BugSeverity;
   title: string;
@@ -162,28 +168,9 @@ export interface UnifiedBugFinding {
 export interface AiScanStatus {
   status: 'ok' | 'skipped' | 'error';
   model?: string;
-  message?: string;
   findingsCount: number;
   durationMs?: number;
-}
-
-export interface AnalysisResponse {
-  filename: string;
-  testFilename: string;
-  language?: string;
-  originalCode: string;
-  patchedCode: string;
-  generatedTestCode?: string;
-  astReport: AstReport;
-  baseline: TestRunResult;
-  sbfl?: SbflSpectrum;
-  patchInfo: PatchInfo;
-  sandbox: TestRunResult;
-  diff: DiffData;
-  confidence: ConfidenceBreakdown;
-  trustVerdict: TrustVerdict;
-  unifiedFindings?: UnifiedBugFinding[];
-  aiScanStatus?: AiScanStatus;
+  message: string;
 }
 
 export interface VoiceNote {
@@ -199,6 +186,26 @@ export interface VoiceNote {
   transcript: string;
   transcriptionStatus: 'transcribing' | 'completed' | 'failed' | 'manual';
   transcriptionError?: string;
+}
+
+export interface AnalysisResponse {
+  filename: string;
+  testFilename: string;
+  language?: string;
+  originalCode: string;
+  patchedCode: string;
+  generatedTestCode?: string;
+  eli10?: Eli10Explanation;
+  astReport: AstReport;
+  baseline: TestRunResult;
+  sbfl?: SbflSpectrum;
+  patchInfo: PatchInfo;
+  sandbox: TestRunResult;
+  diff: DiffData;
+  confidence: ConfidenceBreakdown;
+  trustVerdict: TrustVerdict;
+  unifiedFindings?: UnifiedBugFinding[];
+  aiScanStatus?: AiScanStatus;
 }
 
 export type AuditDecision = 'accepted' | 'rejected' | 'override' | 'blocked';

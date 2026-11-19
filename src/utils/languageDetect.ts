@@ -137,6 +137,70 @@ export function detectLanguageFromFilename(filename: string): SupportedLanguage 
   return 'generic';
 }
 
+/**
+ * Detects language from code content signatures when a judge pastes raw code
+ * into the default blank editor, falling back to the filename extension.
+ */
+export function detectLanguageFromCodeOrFilename(
+  sourceCode: string,
+  filename: string
+): SupportedLanguage {
+  const code = (sourceCode || '').trim();
+  const isDefaultName =
+    !filename ||
+    filename === 'live_judge_code.py' ||
+    filename === 'module.py' ||
+    filename === 'untitled';
+
+  if (code) {
+    if (/^\s*(--|\/\*[\s\S]*?\*\/\s*)?(SELECT|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|CREATE\s+TABLE|ALTER\s+TABLE)\b/im.test(code) && !/\b(def |function |class |import |#include)\b/.test(code)) {
+      return 'sql';
+    }
+    if (/^\s*#include\s+[<"](iostream|vector|string|map|algorithm)[>"]|\bstd::/m.test(code)) {
+      return 'cpp';
+    }
+    if (/^\s*#include\s+[<"][\w./]+[>"]/m.test(code)) {
+      return 'c';
+    }
+    if (/\bpublic\s+(?:final\s+)?class\s+\w+|\bSystem\.out\.print/m.test(code)) {
+      return 'java';
+    }
+    if (/\bfn\s+\w+\s*\([^)]*\)\s*(?:->|\{)|\blet\s+mut\s+\w+/m.test(code)) {
+      return 'rust';
+    }
+    if (/^\s*package\s+\w+[\s\S]*\bfunc\s+/m.test(code)) {
+      return 'go';
+    }
+    if (/^\s*<\?php\b|\$[A-Za-z_]\w*\s*=/m.test(code) && /;\s*$/m.test(code)) {
+      return 'php';
+    }
+    if (/^\s*#!/m.test(code) && /\b(bash|sh)\b/.test(code.split('\n')[0])) {
+      return 'bash';
+    }
+    if (/\busing\s+System;|\bnamespace\s+[\w.]+/m.test(code)) {
+      return 'csharp';
+    }
+    if (
+      /\b(?:interface|type)\s+[A-Z]\w*|\b(?:export\s+)?function\s+\w+\s*\([^)]*:\s*(?:number|string|boolean|any|Record|Array)\b/m.test(
+        code
+      )
+    ) {
+      return 'typescript';
+    }
+    if (
+      /\b(?:const|let|var)\s+\w+\s*=|\bfunction\s+\w+\s*\(|\bconsole\.log\s*\(/m.test(code) &&
+      !/\bdef\s+\w+\s*\(/.test(code)
+    ) {
+      return isDefaultName ? 'javascript' : detectLanguageFromFilename(filename);
+    }
+    if (/^\s*def\s+\w+\s*\([^)]*\)\s*:/m.test(code) || /^\s*from\s+[\w.]+\s+import\s+/m.test(code)) {
+      return 'python';
+    }
+  }
+
+  return detectLanguageFromFilename(filename);
+}
+
 export function getLanguageMeta(id: SupportedLanguage): LanguageOption {
   return (
     SUPPORTED_LANGUAGES.find((l) => l.id === id) ??
