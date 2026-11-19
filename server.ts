@@ -6,6 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runMultiLangAnalysis } from './engine/multi_lang_engine.ts';
 import {
+  GeminiConfigError,
+  runGeminiAutonomousAutopatch,
   runGeminiLatestBugScan,
   transcribeVoiceNote,
 } from './engine/gemini_bug_scanner.ts';
@@ -82,7 +84,51 @@ async function startServer() {
   app.use(express.json({ limit: '8mb' }));
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, engine: 'autopatch-multi-language-sandbox' });
+    res.json({
+      ok: true,
+      engine: 'autopatch-multi-language-sandbox',
+      geminiConfigured: Boolean(process.env.GEMINI_API_KEY?.trim()),
+    });
+  });
+
+  app.post('/api/autopatch', async (req, res) => {
+    const { sourceCode, errorStatement, filename, language } = req.body ?? {};
+    const combinedInput = typeof sourceCode === 'string' ? sourceCode.trim() : '';
+    const errText = typeof errorStatement === 'string' ? errorStatement.trim() : '';
+
+    if (!combinedInput && !errText) {
+      res.status(400).json({
+        error: 'Please paste a code snippet, an error/problem statement, or upload a file.',
+        code: 'EMPTY_INPUT',
+      });
+      return;
+    }
+
+    const safeFilename =
+      typeof filename === 'string' && filename.trim() ? filename.trim() : 'snippet.py';
+    const resolvedLang = resolveLanguage(language, safeFilename);
+
+    try {
+      const report = await runGeminiAutonomousAutopatch({
+        sourceCode: combinedInput || errText,
+        errorStatement: errText || undefined,
+        filename: safeFilename,
+        language: resolvedLang,
+      });
+      res.json(report);
+    } catch (err) {
+      if (err instanceof GeminiConfigError) {
+        res.status(503).json({
+          error: err.message,
+          code: 'MISSING_GEMINI_API_KEY',
+        });
+        return;
+      }
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Gemini autonomous analysis failed.',
+        code: 'GEMINI_API_ERROR',
+      });
+    }
   });
 
   app.post('/api/transcribe-note', async (req, res) => {

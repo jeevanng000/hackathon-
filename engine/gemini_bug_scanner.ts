@@ -1,12 +1,21 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type {
   AiScanStatus,
+  AutoPatchReport,
   BugCategory,
   BugSeverity,
   UnifiedBugFinding,
 } from '../src/types/autopatch.ts';
+import { normalizeGeminiReport } from '../src/utils/autopatchWorkflow.ts';
 
 const MODEL_NAME = 'gemini-4-hydrogen';
+
+export class GeminiConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GeminiConfigError';
+  }
+}
 
 let cachedClient: GoogleGenAI | null = null;
 
@@ -53,6 +62,163 @@ function normalizeSeverity(raw: string): BugSeverity {
   if (lower === 'critical') return 'critical';
   if (lower === 'info') return 'info';
   return 'warning';
+}
+
+export async function runGeminiAutonomousAutopatch(params: {
+  sourceCode: string;
+  errorStatement?: string;
+  filename?: string;
+  language?: string;
+}): Promise<AutoPatchReport> {
+  const client = getGeminiClient();
+  if (!client) {
+    throw new GeminiConfigError(
+      'GEMINI_API_KEY is not configured on the server. Set GEMINI_API_KEY to run Gemini AI analysis, or run Local Deterministic Sandbox below.'
+    );
+  }
+
+  const prompt = [
+    `Analyze the following ${params.language || 'auto-detected'} code or problem statement${params.filename ? ` (${params.filename})` : ''}.`,
+    params.errorStatement?.trim()
+      ? `Reported error / traceback / problem statement:\n${params.errorStatement.trim().slice(0, 3000)}`
+      : '',
+    `Source code or snippet:\n${params.sourceCode.slice(0, 16000)}`,
+    `Execute the 5-stage autonomous AutoPatch workflow:
+1. Upload/Input parsing
+2. Bug & vulnerability scanning
+3. Root-cause explanation (why it fails and exact triggering input)
+4. Minimal focused patch generation (exact before_code matching lines from the input and clean after_code replacement preserving indentation)
+5. Test case validation (include realistic inputs, expected outputs, and pre-patch status 'fail' or regression 'pass')
+Return strictly structured JSON matching the responseSchema.`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  let rawText = '{}';
+  try {
+    const response = await client.models.generateContent({
+      model: MODEL_NAME,
+      contents: prompt,
+      config: {
+        systemInstruction:
+          'You are AutoPatch, an autonomous software bug detection and repair engine. Return strictly valid JSON with detected bugs, minimal exact-matching before_code/after_code patches, realistic test cases, root-cause explanations naming triggering inputs, trace_logs, and summary health score + prioritized actions. Never invent fictional line content for before_code; copy the exact buggy snippet from the input.',
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            detected_language: {
+              type: Type.STRING,
+              description: 'Detected programming language such as python, typescript, javascript, java, or c',
+            },
+            trace_logs: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'Concise 4 to 6 stage execution trace log lines covering scan, root cause, fix, and test validation',
+            },
+            bugs: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  severity: {
+                    type: Type.STRING,
+                    description: 'Strictly one of: Critical, High, Medium, Low',
+                  },
+                  confidence: {
+                    type: Type.INTEGER,
+                    description: 'Confidence percentage from 0 to 100',
+                  },
+                  errored_statement: {
+                    type: Type.STRING,
+                    description: 'Exact buggy line or statement from the provided input',
+                  },
+                  root_cause: {
+                    type: Type.STRING,
+                    description: 'Clear explanation of why the bug fails and what exact input triggers it',
+                  },
+                  before_code: {
+                    type: Type.STRING,
+                    description: 'Exact snippet from the source code before repair',
+                  },
+                  after_code: {
+                    type: Type.STRING,
+                    description: 'Focused minimal patched replacement snippet preserving indentation',
+                  },
+                  test_cases: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        input: { type: Type.STRING },
+                        expected_output: { type: Type.STRING },
+                        actual_output: { type: Type.STRING },
+                        status: {
+                          type: Type.STRING,
+                          description: 'Strictly one of: pass, fail',
+                        },
+                      },
+                      required: ['input', 'expected_output', 'status'],
+                    },
+                  },
+                },
+                required: [
+                  'id',
+                  'title',
+                  'severity',
+                  'confidence',
+                  'errored_statement',
+                  'root_cause',
+                  'before_code',
+                  'after_code',
+                  'test_cases',
+                ],
+              },
+            },
+            summary: {
+              type: Type.OBJECT,
+              properties: {
+                health_score: {
+                  type: Type.INTEGER,
+                  description: 'Overall code health score from 0 to 100',
+                },
+                overview: { type: Type.STRING },
+                prioritized_actions: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+              required: ['health_score', 'overview', 'prioritized_actions'],
+            },
+          },
+          required: ['detected_language', 'trace_logs', 'bugs', 'summary'],
+        },
+      },
+    });
+    rawText = (response.text ?? '{}').trim();
+  } catch (err) {
+    const rawMsg = err instanceof Error ? err.message : String(err);
+    try {
+      const parsedErr = JSON.parse(rawMsg);
+      const friendly = parsedErr?.error?.message;
+      if (typeof friendly === 'string' && friendly.trim()) {
+        throw new Error(`${friendly.trim()} You can retry or run Local Deterministic Sandbox.`);
+      }
+    } catch (inner) {
+      if (inner instanceof Error && inner.message !== rawMsg && inner.message.includes('Local Deterministic Sandbox')) {
+        throw inner;
+      }
+    }
+    throw err;
+  }
+
+  const parsed = JSON.parse(rawText);
+  return normalizeGeminiReport(parsed, {
+    fallbackLanguage: params.language,
+    model: MODEL_NAME,
+  });
 }
 
 export async function runGeminiLatestBugScan(params: {

@@ -10,16 +10,21 @@
 @layer base {
   html {
     font-family: var(--font-sans);
-    color: #F4F7FF;
-    background-color: #0B1020;
-    color-scheme: dark;
+    color-scheme: light dark;
   }
 
-  h1, h2, h3, h4, .font-display {
+  h1,
+  h2,
+  h3,
+  h4,
+  .font-display {
     font-family: var(--font-display);
   }
 
-  code, pre, textarea.code-editor, .font-mono {
+  code,
+  pre,
+  textarea.code-editor,
+  .font-mono {
     font-family: var(--font-mono);
   }
 }
@@ -28,10 +33,52 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Custom subtle dark scrollbars for code & diff panels */
+/* Tactile pop-on-hover and active spring feedback */
+@layer utilities {
+  .tactile-btn {
+    transition-property: transform, box-shadow, background-color, border-color, color, opacity;
+    transition-duration: 300ms;
+    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .tactile-btn:hover:not(:disabled) {
+    transform: translateY(-1px) scale(1.04);
+  }
+
+  .tactile-btn:active:not(:disabled) {
+    transform: translateY(0) scale(0.96);
+  }
+
+  .tactile-btn:focus-visible {
+    outline: 2px solid rgb(99 102 241 / 0.85);
+    outline-offset: 2px;
+  }
+
+  .workspace-spring {
+    transition: all 500ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+/* Subtle Gemini-inspired iridescent gradient border/glow */
+.gemini-accent-gradient {
+  background-image: linear-gradient(135deg, #3b82f6 0%, #6366f1 50%, #8b5cf6 100%);
+}
+
+.gemini-text-gradient {
+  background-image: linear-gradient(135deg, #2563eb 0%, #6366f1 50%, #8b5cf6 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.dark .gemini-text-gradient {
+  background-image: linear-gradient(135deg, #60a5fa 0%, #818cf8 50%, #c084fc 100%);
+}
+
+/* Clean custom scrollbars for code & drawer panes */
 .code-scroll::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
 }
 
 .code-scroll::-webkit-scrollbar-track {
@@ -39,36 +86,36 @@
 }
 
 .code-scroll::-webkit-scrollbar-thumb {
-  background: rgba(166, 176, 200, 0.24);
-  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
 }
 
 .code-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(166, 176, 200, 0.42);
+  background: rgba(148, 163, 184, 0.55);
 }
 
 /* Gentle atmospheric aurora drift behind workspace content */
 @keyframes autopatch-aurora-drift-a {
   0% {
-    transform: translate3d(-4%, -3%, 0) scale(1);
+    transform: translate3d(-3%, -2%, 0) scale(1);
   }
   50% {
-    transform: translate3d(5%, 4%, 0) scale(1.06);
+    transform: translate3d(4%, 3%, 0) scale(1.05);
   }
   100% {
-    transform: translate3d(-4%, -3%, 0) scale(1);
+    transform: translate3d(-3%, -2%, 0) scale(1);
   }
 }
 
 @keyframes autopatch-aurora-drift-b {
   0% {
-    transform: translate3d(4%, 3%, 0) scale(1.04);
+    transform: translate3d(3%, 2%, 0) scale(1.03);
   }
   50% {
-    transform: translate3d(-5%, -4%, 0) scale(0.98);
+    transform: translate3d(-4%, -3%, 0) scale(0.98);
   }
   100% {
-    transform: translate3d(4%, 3%, 0) scale(1.04);
+    transform: translate3d(3%, 2%, 0) scale(1.03);
   }
 }
 
@@ -84,6 +131,14 @@
   .aurora-layer-a,
   .aurora-layer-b {
     animation: none;
+    transform: none;
+  }
+
+  .tactile-btn,
+  .tactile-btn:hover:not(:disabled),
+  .tactile-btn:active:not(:disabled),
+  .workspace-spring {
+    transition: none;
     transform: none;
   }
 }

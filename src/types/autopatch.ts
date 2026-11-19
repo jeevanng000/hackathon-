@@ -249,3 +249,60 @@ export interface DemoCase {
 export type AppView = 'dashboard' | 'projects' | 'history';
 export type DashboardTab = 'inspector' | 'diff';
 
+export type AutoPatchSeverity = 'Critical' | 'High' | 'Medium' | 'Low';
+export type AutoPatchTestStatus = 'pass' | 'fail';
+
+export interface AutoPatchTestCase {
+  input: string;
+  expected_output: string;
+  actual_output?: string;
+  status: AutoPatchTestStatus;
+}
+
+export interface AutoPatchBug {
+  id: string;
+  title: string;
+  severity: AutoPatchSeverity;
+  confidence: number;
+  errored_statement: string;
+  root_cause: string;
+  before_code: string;
+  after_code: string;
+  test_cases: AutoPatchTestCase[];
+}
+
+export interface AutoPatchSummary {
+  health_score: number;
+  overview: string;
+  prioritized_actions: string[];
+}
+
+export interface AutoPatchReport {
+  bugs: AutoPatchBug[];
+  summary: AutoPatchSummary;
+  detected_language: string;
+  trace_logs: string[];
+  execution_source: 'gemini' | 'local-sandbox';
+  model?: string;
+}
+
+export type SafePatchDecision = 'Accepted' | 'Rejected';
+
+export interface SafeChangeHistoryEntry {
+  id: string;
+  timestamp: string;
+  filename: string;
+  bugId: string;
+  bugTitle: string;
+  severity: AutoPatchSeverity;
+  confidence: number;
+  decision: SafePatchDecision;
+  errored_statement: string;
+  before_code: string;
+  after_code: string;
+  execution_source: 'gemini' | 'local-sandbox';
+}
+
+export type WorkflowStageId = 1 | 2 | 3 | 4 | 5;
+
+

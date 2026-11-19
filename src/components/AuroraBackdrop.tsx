@@ -2,31 +2,28 @@ export function AuroraBackdrop() {
   return (
     <div
       aria-hidden="true"
-      className="fixed inset-0 -z-10 overflow-hidden pointer-events-none bg-[#0B1020]"
+      className="pointer-events-none fixed inset-0 -z-10 overflow-hidden bg-slate-50 dark:bg-[#0B1120] transition-colors duration-300"
     >
-      {/* Subtle top-left primary indigo aura */}
       <div
-        className="aurora-layer-a absolute -top-40 -left-32 w-[620px] h-[520px] rounded-full opacity-[0.16] blur-[110px]"
+        className="aurora-layer-a absolute -top-[28%] -left-[12%] h-[68vh] w-[68vw] rounded-full opacity-75 dark:opacity-90"
         style={{
           background:
-            'radial-gradient(circle at center, #8B7CFF 0%, rgba(139, 124, 255, 0.2) 48%, transparent 75%)',
+            'radial-gradient(circle at center, rgba(59, 130, 246, 0.16) 0%, rgba(99, 102, 241, 0.08) 42%, transparent 72%)',
         }}
       />
-
-      {/* Subtle right-side cyan aura */}
       <div
-        className="aurora-layer-b absolute top-1/4 -right-36 w-[560px] h-[520px] rounded-full opacity-[0.12] blur-[120px]"
+        className="aurora-layer-b absolute -bottom-[26%] -right-[10%] h-[64vh] w-[64vw] rounded-full opacity-70 dark:opacity-85"
         style={{
           background:
-            'radial-gradient(circle at center, #50D7E6 0%, rgba(80, 215, 230, 0.16) 45%, transparent 75%)',
+            'radial-gradient(circle at center, rgba(139, 92, 246, 0.16) 0%, rgba(56, 189, 248, 0.08) 42%, transparent 72%)',
         }}
       />
-
-      {/* Soft lower vignette anchoring contrast */}
       <div
-        className="absolute inset-x-0 bottom-0 h-64 opacity-70"
+        className="absolute inset-0 opacity-[0.025] dark:opacity-[0.04]"
         style={{
-          background: 'linear-gradient(to top, #070B16 0%, transparent 100%)',
+          backgroundImage:
+            'radial-gradient(circle, currentColor 1px, transparent 1px)',
+          backgroundSize: '28px 28px',
         }}
       />
     </div>

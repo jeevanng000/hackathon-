@@ -1,648 +1,468 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { DEMO_CASES } from './data/demoCases';
 import type {
   AnalysisResponse,
-  AppView,
-  AuditDecision,
-  AuditEntry,
-  DashboardTab,
+  AutoPatchBug,
+  AutoPatchReport,
   DemoCase,
-  ExplanationMode,
-  UnifiedBugFinding,
-  VoiceNote,
+  SafeChangeHistoryEntry,
+  SafePatchDecision,
+  WorkflowStageId,
 } from './types/autopatch';
-import { buildAuditEntry } from './utils/diffAndAudit';
 import {
-  detectLanguageFromFilename,
-  type SupportedLanguage,
-} from './utils/languageDetect';
-import {
-  applyAllSafeFixesToSource,
-  applyFindingFixToSource,
-  buildUnifiedFindings,
-} from './utils/unifiedFindings';
-import { VIEW_TRANSITION } from './utils/motionPresets';
+  adaptDeterministicAnalysisToReport,
+  applyPatchToCode,
+  createHistoryEntry,
+  getAdjacentBugId,
+  validateSubmissionInput,
+} from './utils/autopatchWorkflow';
+import { detectLanguageFromFilename } from './utils/languageDetect';
+import { isEditableTargetElement } from './utils/unifiedFindings';
 import { AuroraBackdrop } from './components/AuroraBackdrop';
-import { TopBar } from './components/TopBar';
-import { Sidebar } from './components/Sidebar';
-import { WorkbenchView } from './components/WorkbenchView';
-import type { CodeStageMode } from './components/BugCodeStage';
-import { ProjectsView } from './components/ProjectsView';
-import { AuditLedgerView } from './components/AuditLedgerView';
+import { TopBar, type MainScreen } from './components/TopBar';
+import { WelcomeHeroInput } from './components/WelcomeHeroInput';
+import { WorkspaceDashboard } from './components/WorkspaceDashboard';
+import { BugGlassModal } from './components/BugGlassModal';
+import { DebuggingDock } from './components/DebuggingDock';
+import { SafeChangeHistoryView } from './components/SafeChangeHistoryView';
 
-const AUDIT_STORAGE_KEY = 'autopatch.auditLedger.v1';
-const VOICE_NOTES_STORAGE_KEY = 'autopatch.voiceNotes.v1';
+const HISTORY_STORAGE_KEY = 'autopatch.safeHistory.v1';
+const THEME_STORAGE_KEY = 'autopatch.theme.v1';
 
-function loadStoredAuditEntries(): AuditEntry[] {
+function loadStoredHistory(): SafeChangeHistoryEntry[] {
   try {
-    const raw = window.localStorage.getItem(AUDIT_STORAGE_KEY);
+    const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as AuditEntry[]) : [];
+    return Array.isArray(parsed) ? (parsed as SafeChangeHistoryEntry[]) : [];
   } catch {
     return [];
   }
 }
 
-function loadStoredVoiceNotes(): VoiceNote[] {
+function loadInitialTheme(): boolean {
   try {
-    const raw = window.localStorage.getItem(VOICE_NOTES_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as VoiceNote[]) : [];
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === 'dark') return true;
+    if (stored === 'light') return false;
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
   } catch {
-    return [];
+    return false;
   }
 }
 
 export default function App() {
-  const initialDemo = DEMO_CASES[0];
+  const [isDark, setIsDark] = useState<boolean>(() => loadInitialTheme());
+  const [activeScreen, setActiveScreen] = useState<MainScreen>('workspace');
+  const [hasSubmitted, setHasSubmitted] = useState(false);
 
-  const [activeView, setActiveView] = useState<AppView>('dashboard');
-  const [dashboardTab, setDashboardTab] = useState<DashboardTab>('inspector');
-  const [activeDemoId, setActiveDemoId] = useState<string | null>(initialDemo.id);
-  const [selectedLanguage, setSelectedLanguage] = useState<'auto' | SupportedLanguage>('auto');
-  const [filename, setFilename] = useState(initialDemo.filename);
-  const [testFilename, setTestFilename] = useState(initialDemo.testFilename);
-  const [sourceCode, setSourceCode] = useState(initialDemo.sourceCode);
-  const [testCode, setTestCode] = useState(initialDemo.testCode);
-  const [bugContext, setBugContext] = useState(initialDemo.bugContext ?? '');
-  const [caseDescription, setCaseDescription] = useState(initialDemo.description);
+  const [filename, setFilename] = useState('snippet.py');
+  const [sourceCode, setSourceCode] = useState('');
+  const [testCode, setTestCode] = useState('');
+  const [errorStatement, setErrorStatement] = useState('');
+  const [validationError, setValidationError] = useState<string | null>(null);
 
-  const [explanationMode, setExplanationMode] = useState<ExplanationMode>('plain');
-  const [stageMode, setStageMode] = useState<CodeStageMode>('inspect');
-
-  const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
-  const [unifiedFindings, setUnifiedFindings] = useState<UnifiedBugFinding[]>([]);
-  const [activeFindingId, setActiveFindingId] = useState<string | null>(null);
-  const [resolvedFindingIds, setResolvedFindingIds] = useState<Set<string>>(() => new Set());
-  const [undoStack, setUndoStack] = useState<string[]>([]);
-  const [hasLocalEdits, setHasLocalEdits] = useState(false);
-
-  const [activeDecision, setActiveDecision] = useState<AuditDecision | null>(null);
-  const [isRunning, setIsRunning] = useState(false);
-  const [isValidatingManual, setIsValidatingManual] = useState(false);
+  const [geminiConfigured, setGeminiConfigured] = useState<boolean | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [currentStage, setCurrentStage] = useState<WorkflowStageId>(1);
+  const [report, setReport] = useState<AutoPatchReport | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
 
-  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>(() =>
-    loadStoredAuditEntries()
+  const [activeBugId, setActiveBugId] = useState<string | null>(null);
+  const [modalBugId, setModalBugId] = useState<string | null>(null);
+  const [decisions, setDecisions] = useState<Record<string, SafePatchDecision>>({});
+  const [dockExpanded, setDockExpanded] = useState(false);
+
+  const [historyEntries, setHistoryEntries] = useState<SafeChangeHistoryEntry[]>(() =>
+    loadStoredHistory()
   );
-  const [voiceNotes, setVoiceNotes] = useState<VoiceNote[]>(() =>
-    loadStoredVoiceNotes()
-  );
 
-  const resolvedLanguage: SupportedLanguage =
-    selectedLanguage === 'auto'
-      ? detectLanguageFromFilename(filename)
-      : selectedLanguage;
-
-  const mainScrollRef = useRef<HTMLElement>(null);
+  const stageTimersRef = useRef<number[]>([]);
+  const autostartTriggeredRef = useRef(false);
 
   useEffect(() => {
-    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
-    if (mainScrollRef.current) {
-      mainScrollRef.current.scrollTop = 0;
+    document.documentElement.classList.toggle('dark', isDark);
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, isDark ? 'dark' : 'light');
+    } catch {
+      // Ignore storage errors
     }
-  }, [activeView]);
+  }, [isDark]);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(AUDIT_STORAGE_KEY, JSON.stringify(auditEntries));
+      window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(historyEntries));
     } catch {
-      // Ignore storage quota errors
+      // Ignore storage errors
     }
-  }, [auditEntries]);
+  }, [historyEntries]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(VOICE_NOTES_STORAGE_KEY, JSON.stringify(voiceNotes));
-    } catch {
-      // Ignore storage quota errors
+    let active = true;
+    fetch('/api/health')
+      .then((res) => res.json())
+      .then((data) => {
+        if (active && typeof data?.geminiConfigured === 'boolean') {
+          setGeminiConfigured(data.geminiConfigured);
+        }
+      })
+      .catch(() => {
+        if (active) setGeminiConfigured(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const clearStageTimers = useCallback(() => {
+    for (const t of stageTimersRef.current) {
+      window.clearTimeout(t);
     }
-  }, [voiceNotes]);
+    stageTimersRef.current = [];
+  }, []);
 
-  const handleAddVoiceNote = (note: VoiceNote) => {
-    setVoiceNotes((prev) => [note, ...prev]);
-  };
+  useEffect(() => () => clearStageTimers(), [clearStageTimers]);
 
-  const handleUpdateVoiceNote = (noteId: string, patch: Partial<VoiceNote>) => {
-    setVoiceNotes((prev) =>
-      prev.map((n) => (n.id === noteId ? { ...n, ...patch } : n))
-    );
-  };
+  const executeScan = useCallback(
+    async (params: {
+      mode: 'gemini' | 'local-sandbox';
+      codeOverride?: string;
+      errOverride?: string;
+      filenameOverride?: string;
+      testCodeOverride?: string;
+    }) => {
+      const codeVal = params.codeOverride ?? sourceCode;
+      const errVal = params.errOverride ?? errorStatement;
+      const fileVal = params.filenameOverride ?? filename;
+      const testVal = params.testCodeOverride ?? testCode;
 
-  const handleDeleteVoiceNote = (noteId: string) => {
-    setVoiceNotes((prev) => prev.filter((n) => n.id !== noteId));
-  };
+      const check = validateSubmissionInput(codeVal.trim() || errVal.trim());
+      if (!check.valid) {
+        setValidationError(check.error ?? 'Input required.');
+        return;
+      }
 
-  const resetInspectionState = (nextStageMode: CodeStageMode = 'inspect') => {
-    setAnalysis(null);
-    setUnifiedFindings([]);
-    setActiveFindingId(null);
-    setResolvedFindingIds(new Set());
-    setUndoStack([]);
-    setHasLocalEdits(false);
-    setActiveDecision(null);
-    setErrorMessage(null);
-    setStageMode(nextStageMode);
-    setDashboardTab('inspector');
-  };
+      setValidationError(null);
+      setActiveScreen('workspace');
+      setHasSubmitted(true);
+      setIsScanning(true);
+      setErrorMessage(null);
+      setErrorCode(null);
+      setReport(null);
+      setModalBugId(null);
+      setActiveBugId(null);
+      setDecisions({});
 
-  const handleSelectDemo = (demo: DemoCase = DEMO_CASES[0]) => {
-    setActiveDemoId(demo.id);
-    setSelectedLanguage('auto');
-    setFilename(demo.filename);
-    setTestFilename(demo.testFilename);
-    setSourceCode(demo.sourceCode);
-    setTestCode(demo.testCode);
-    setBugContext(demo.bugContext ?? '');
-    setCaseDescription(demo.description);
-    resetInspectionState('inspect');
-    setActiveView('dashboard');
-  };
+      clearStageTimers();
+      setCurrentStage(2);
+      stageTimersRef.current.push(
+        window.setTimeout(() => setCurrentStage(3), 260),
+        window.setTimeout(() => setCurrentStage(4), 560),
+        window.setTimeout(() => setCurrentStage(5), 880)
+      );
 
-  const handleStartBlank = () => {
-    setActiveDemoId(null);
-    setSelectedLanguage('auto');
-    setFilename('snippet.py');
-    setTestFilename('test_snippet.py');
-    setSourceCode('');
-    setTestCode('');
-    setBugContext('');
-    setCaseDescription('Paste or drop any program file, then click Scan & Find Bugs.');
-    resetInspectionState('edit');
-    setActiveView('dashboard');
-  };
+      const safeName = fileVal.trim() || 'snippet.py';
+      const lang = detectLanguageFromFilename(safeName);
 
-  const handleResetDemo = () => {
-    const currentDemo = DEMO_CASES.find((d) => d.id === activeDemoId);
-    if (currentDemo) {
-      handleSelectDemo(currentDemo);
+      try {
+        let nextReport: AutoPatchReport;
+
+        if (params.mode === 'gemini') {
+          const res = await fetch('/api/autopatch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sourceCode: codeVal,
+              errorStatement: errVal,
+              filename: safeName,
+              language: lang,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            const err = new Error(data.error || 'Gemini scan failed.') as Error & {
+              code?: string;
+            };
+            err.code = data.code;
+            throw err;
+          }
+          nextReport = data as AutoPatchReport;
+        } else {
+          const res = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              filename: safeName,
+              testFilename: `test_${safeName}`,
+              language: lang,
+              sourceCode: codeVal,
+              testCode: testVal,
+              bugContext: errVal,
+              includeAiScan: false,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || 'Local sandbox analysis failed.');
+          }
+          nextReport = adaptDeterministicAnalysisToReport(data as AnalysisResponse);
+        }
+
+        clearStageTimers();
+        setCurrentStage(5);
+        setReport(nextReport);
+        const firstBugId = nextReport.bugs[0]?.id ?? null;
+        setActiveBugId(firstBugId);
+        if (firstBugId) {
+          setModalBugId(firstBugId);
+        }
+      } catch (err) {
+        clearStageTimers();
+        const typedErr = err as Error & { code?: string };
+        setErrorMessage(typedErr.message || 'Unable to run AutoPatch workflow.');
+        setErrorCode(typedErr.code ?? null);
+      } finally {
+        setIsScanning(false);
+      }
+    },
+    [clearStageTimers, errorStatement, filename, sourceCode, testCode]
+  );
+
+  // Support ?autostart=1 for automated workspace checks
+  useEffect(() => {
+    if (autostartTriggeredRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('autostart') === '1') {
+      autostartTriggeredRef.current = true;
+      const demo = DEMO_CASES[0];
+      setFilename(demo.filename);
+      setSourceCode(demo.sourceCode);
+      setTestCode(demo.testCode);
+      setErrorStatement(demo.bugContext ?? '');
+      void executeScan({
+        mode: geminiConfigured ? 'gemini' : 'local-sandbox',
+        codeOverride: demo.sourceCode,
+        errOverride: demo.bugContext ?? '',
+        filenameOverride: demo.filename,
+        testCodeOverride: demo.testCode,
+      });
     }
+  }, [executeScan, geminiConfigured]);
+
+  const handleSelectPreset = (preset: DemoCase) => {
+    setValidationError(null);
+    setFilename(preset.filename);
+    setSourceCode(preset.sourceCode);
+    setTestCode(preset.testCode);
+    setErrorStatement(preset.bugContext ?? '');
   };
 
-  const handleUploadSource = (uploadedName: string, content: string) => {
-    setActiveDemoId(null);
-    setSelectedLanguage('auto');
-    setFilename(uploadedName);
-    setTestFilename(`test_${uploadedName}`);
-    setSourceCode(content);
-    setTestCode('');
-    setBugContext('');
-    setCaseDescription(`Custom uploaded source file (${uploadedName}).`);
-    resetInspectionState('inspect');
-    setActiveView('dashboard');
-  };
-
-  const handleUploadTest = (uploadedName: string, content: string) => {
-    setTestFilename(uploadedName);
-    setTestCode(content);
-    setAnalysis(null);
-    setActiveDecision(null);
+  const handleResetToWelcome = () => {
+    clearStageTimers();
+    setActiveScreen('workspace');
+    setHasSubmitted(false);
+    setIsScanning(false);
+    setCurrentStage(1);
+    setReport(null);
     setErrorMessage(null);
+    setErrorCode(null);
+    setActiveBugId(null);
+    setModalBugId(null);
+    setDecisions({});
+    setValidationError(null);
+    setDockExpanded(false);
   };
 
-  const handleEditSourceDirectly = (nextCode: string) => {
-    setSourceCode(nextCode);
-    if (analysis) {
-      setHasLocalEdits(true);
-    }
-  };
-
-  const handleRunAnalysis = async () => {
-    setErrorMessage(null);
-    if (!sourceCode.trim()) {
-      setErrorMessage('Paste or upload a program before running a bug scan.');
-      setActiveView('dashboard');
-      setDashboardTab('inspector');
-      setStageMode('edit');
+  const handleAcceptPatch = (bug: AutoPatchBug) => {
+    if (decisions[bug.id] === 'Accepted') {
+      setModalBugId(null);
       return;
     }
-
-    setIsRunning(true);
-    setActiveDecision(null);
-    setActiveView('dashboard');
-
-    try {
-      const res = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filename,
-          testFilename,
-          language: resolvedLanguage,
-          sourceCode,
-          testCode,
-          bugContext,
-          includeAiScan: true,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Analysis failed.');
-      }
-
-      const typed = data as AnalysisResponse;
-      const findings = typed.unifiedFindings ?? buildUnifiedFindings(typed, []);
-
-      setAnalysis(typed);
-      setUnifiedFindings(findings);
-      setResolvedFindingIds(new Set());
-      setUndoStack([]);
-      setHasLocalEdits(false);
-      setStageMode('inspect');
-      setDashboardTab('inspector');
-      setActiveFindingId(findings[0]?.id ?? null);
-
-      if (!testCode.trim() && typed.generatedTestCode) {
-        setTestCode(typed.generatedTestCode);
-      }
-
-      if (typed.trustVerdict === 'blocked') {
-        const fileNotes = voiceNotes.filter((n) => n.filename === typed.filename);
-        const blockedRecord = buildAuditEntry({
-          analysis: typed,
-          decision: 'blocked',
-          voiceNotes: fileNotes,
-        });
-        setAuditEntries((prev) => [blockedRecord, ...prev]);
-      }
-    } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Unable to reach AutoPatch analysis engine.'
-      );
-      setActiveView('dashboard');
-    } finally {
-      setIsRunning(false);
-    }
-  };
-
-  const handleApplyFix = (finding: UnifiedBugFinding) => {
-    if (!finding.canAutoFix || finding.suggestedReplacement === null) return;
-    const prevLinesCount = finding.endLine - finding.line + 1;
-    const nextLinesCount =
-      finding.suggestedReplacement === ''
-        ? 0
-        : finding.suggestedReplacement.split('\n').length;
-    const lineDelta = nextLinesCount - prevLinesCount;
-
-    const updated = applyFindingFixToSource(sourceCode, finding);
-    setUndoStack((prev) => [...prev, sourceCode]);
-    setSourceCode(updated);
-    setHasLocalEdits(true);
-
-    setResolvedFindingIds((prev) => {
-      const next = new Set(prev);
-      next.add(finding.id);
-      return next;
-    });
-
-    setUnifiedFindings((prev) =>
-      prev.map((item) => {
-        if (item.id === finding.id) {
-          return {
-            ...item,
-            endLine: Math.max(item.line, item.line + nextLinesCount - 1),
-          };
-        }
-        if (item.line > finding.endLine && lineDelta !== 0) {
-          return {
-            ...item,
-            line: Math.max(1, item.line + lineDelta),
-            endLine: Math.max(1, item.endLine + lineDelta),
-          };
-        }
-        return item;
-      })
-    );
-  };
-
-  const handleApplyAllSafeFixes = () => {
-    const remaining = unifiedFindings.filter((f) => !resolvedFindingIds.has(f.id));
-    const { updatedCode, appliedIds } = applyAllSafeFixesToSource(sourceCode, remaining);
-    if (appliedIds.length === 0) return;
-
-    setUndoStack((prev) => [...prev, sourceCode]);
+    const { updatedCode } = applyPatchToCode(sourceCode, bug);
     setSourceCode(updatedCode);
-    setHasLocalEdits(true);
-    setResolvedFindingIds((prev) => {
-      const next = new Set(prev);
-      for (const id of appliedIds) next.add(id);
-      return next;
+    setDecisions((prev) => ({ ...prev, [bug.id]: 'Accepted' }));
+
+    const entry = createHistoryEntry({
+      bug,
+      decision: 'Accepted',
+      filename: filename || 'snippet.py',
+      executionSource: report?.execution_source ?? 'gemini',
     });
+    setHistoryEntries((prev) => [entry, ...prev]);
+    setModalBugId(null);
   };
 
-  const handleUndoFix = () => {
-    if (undoStack.length === 0) return;
-    const previousCode = undoStack[undoStack.length - 1];
-    setUndoStack((prev) => prev.slice(0, -1));
-    setSourceCode(previousCode);
-    if (undoStack.length === 1) {
-      setResolvedFindingIds(new Set());
-      setHasLocalEdits(false);
-    }
+  const handleRejectPatch = (bug: AutoPatchBug) => {
+    setDecisions((prev) => ({ ...prev, [bug.id]: 'Rejected' }));
+    const entry = createHistoryEntry({
+      bug,
+      decision: 'Rejected',
+      filename: filename || 'snippet.py',
+      executionSource: report?.execution_source ?? 'gemini',
+    });
+    setHistoryEntries((prev) => [entry, ...prev]);
+    setModalBugId(null);
   };
 
-  const handleVerifyCurrentCode = async () => {
-    if (!sourceCode.trim()) return;
-    setIsValidatingManual(true);
-    setErrorMessage(null);
+  const bugs = useMemo(() => report?.bugs ?? [], [report]);
+  const modalBug = useMemo(
+    () => bugs.find((b) => b.id === modalBugId) ?? null,
+    [bugs, modalBugId]
+  );
+  const modalBugIndex = useMemo(
+    () => (modalBug ? bugs.findIndex((b) => b.id === modalBug.id) : -1),
+    [bugs, modalBug]
+  );
 
-    try {
-      const res = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filename,
-          testFilename,
-          language: resolvedLanguage,
-          sourceCode,
-          testCode,
-          bugContext,
-          includeAiScan: true,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Verification failed.');
+  // Power-user keyboard navigation for detected bugs
+  useEffect(() => {
+    if (!hasSubmitted || activeScreen !== 'workspace' || bugs.length === 0) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isEditableTargetElement(e.target as HTMLElement | null)) return;
+
+      if (e.key === 'n' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        const nextId = getAdjacentBugId(bugs, modalBugId ?? activeBugId, 'next');
+        if (nextId) {
+          setActiveBugId(nextId);
+          if (modalBugId) setModalBugId(nextId);
+        }
+      } else if (e.key === 'p' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prevId = getAdjacentBugId(bugs, modalBugId ?? activeBugId, 'prev');
+        if (prevId) {
+          setActiveBugId(prevId);
+          if (modalBugId) setModalBugId(prevId);
+        }
+      } else if (e.key === 'Enter' && !modalBugId && activeBugId) {
+        e.preventDefault();
+        setModalBugId(activeBugId);
       }
+    };
 
-      const typed = data as AnalysisResponse;
-      const findings = typed.unifiedFindings ?? buildUnifiedFindings(typed, []);
-      setAnalysis(typed);
-      setUnifiedFindings(findings);
-      setResolvedFindingIds(new Set());
-      setUndoStack([]);
-      setHasLocalEdits(false);
-      setActiveFindingId(findings[0]?.id ?? null);
-      setActiveDecision(null);
-    } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Sandbox verification failed.'
-      );
-    } finally {
-      setIsValidatingManual(false);
-    }
-  };
-
-  const handleValidateManualPatch = async (candidateCode: string) => {
-    if (!analysis) return;
-    setIsValidatingManual(true);
-    setErrorMessage(null);
-
-    try {
-      const res = await fetch('/api/validate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filename: analysis.filename,
-          testFilename: analysis.testFilename,
-          language: analysis.language || resolvedLanguage,
-          originalCode: analysis.originalCode,
-          candidateCode,
-          testCode,
-          baseline: analysis.baseline,
-          targetLine: analysis.patchInfo.targetLine,
-          bugType: analysis.patchInfo.bugType,
-          rootCause: analysis.patchInfo.rootCause,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Manual validation failed.');
-      }
-
-      const typed = data as AnalysisResponse;
-      setAnalysis(typed);
-      setUnifiedFindings(typed.unifiedFindings ?? buildUnifiedFindings(typed, []));
-      setActiveDecision(null);
-    } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Manual sandbox verification failed.'
-      );
-    } finally {
-      setIsValidatingManual(false);
-    }
-  };
-
-  const handleAcceptPatch = (overrideReason?: string) => {
-    if (!analysis) return;
-    const decision: AuditDecision = overrideReason ? 'override' : 'accepted';
-    const fileNotes = voiceNotes.filter((n) => n.filename === analysis.filename);
-    const entry = buildAuditEntry({
-      analysis,
-      decision,
-      overrideReason,
-      voiceNotes: fileNotes,
-    });
-    setAuditEntries((prev) => [entry, ...prev]);
-    setActiveDecision(decision);
-    setSourceCode(analysis.patchedCode);
-    setHasLocalEdits(false);
-  };
-
-  const handleRejectPatch = () => {
-    if (!analysis) return;
-    const fileNotes = voiceNotes.filter((n) => n.filename === analysis.filename);
-    const entry = buildAuditEntry({
-      analysis,
-      decision: 'rejected',
-      voiceNotes: fileNotes,
-    });
-    setAuditEntries((prev) => [entry, ...prev]);
-    setActiveDecision('rejected');
-  };
-
-  const handleDownloadPatched = () => {
-    if (!analysis) return;
-    const blob = new Blob([analysis.patchedCode], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = analysis.filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(url);
-  };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeBugId, activeScreen, bugs, hasSubmitted, modalBugId]);
 
   return (
     <MotionConfig reducedMotion="user">
-      <div className="relative min-h-screen flex flex-col text-[#F4F7FF]">
+      <div className="relative min-h-screen flex flex-col overflow-x-hidden text-slate-900 dark:text-slate-100">
         <AuroraBackdrop />
 
         <TopBar
-          activeView={activeView}
-          onSelectView={setActiveView}
-          onRunAnalysis={handleRunAnalysis}
-          isRunning={isRunning}
-          auditCount={auditEntries.length}
-          onToggleMobileMenu={() => setMobileMenuOpen((prev) => !prev)}
+          activeScreen={activeScreen}
+          onSelectScreen={setActiveScreen}
+          hasStartedWorkspace={hasSubmitted}
+          onResetToWelcome={handleResetToWelcome}
+          historyCount={historyEntries.length}
+          isDark={isDark}
+          onToggleTheme={() => setIsDark((prev) => !prev)}
         />
 
-        <div className="flex flex-1 min-h-0">
-          <Sidebar
-            demoCases={DEMO_CASES}
-            activeDemoId={activeDemoId}
-            onSelectDemo={handleSelectDemo}
-            onStartBlank={handleStartBlank}
-            onUploadSource={handleUploadSource}
-            onUploadTest={handleUploadTest}
-            analysis={analysis}
-            isRunning={isRunning}
-            decisionRecorded={activeDecision !== null}
-            mobileOpen={mobileMenuOpen}
-            onCloseMobile={() => setMobileMenuOpen(false)}
-            findings={unifiedFindings}
-            activeFindingId={activeFindingId}
-            resolvedFindingIds={resolvedFindingIds}
-            onSelectFinding={(id) => {
-              setActiveFindingId(id);
-              setStageMode('inspect');
-              setDashboardTab('inspector');
-              setActiveView('dashboard');
-            }}
-          />
+        <main className="flex-1 w-full">
+          <AnimatePresence mode="wait" initial={false}>
+            {activeScreen === 'history' ? (
+              <motion.div
+                key="history-view"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+              >
+                <SafeChangeHistoryView
+                  entries={historyEntries}
+                  onClearHistory={() => setHistoryEntries([])}
+                  onBackToWorkspace={() => setActiveScreen('workspace')}
+                />
+              </motion.div>
+            ) : (
+              <motion.div
+                key="workspace-view"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+                className="mx-auto max-w-6xl px-4 sm:px-6 py-5 sm:py-7 pb-28 space-y-6"
+              >
+                <WelcomeHeroInput
+                  filename={filename}
+                  sourceCode={sourceCode}
+                  errorStatement={errorStatement}
+                  presets={DEMO_CASES}
+                  isCompact={hasSubmitted}
+                  isScanning={isScanning}
+                  geminiConfigured={geminiConfigured}
+                  validationError={validationError}
+                  onChangeFilename={setFilename}
+                  onChangeSourceCode={(next) => {
+                    setSourceCode(next);
+                    if (validationError) setValidationError(null);
+                  }}
+                  onChangeErrorStatement={setErrorStatement}
+                  onSelectPreset={handleSelectPreset}
+                  onSubmitScan={(mode) => void executeScan({ mode })}
+                />
 
-          <main ref={mainScrollRef} className="flex-1 min-w-0 overflow-y-auto">
-            {/* Mobile view switcher */}
-            <nav
-              aria-label="Mobile workspace views"
-              className="md:hidden bg-[#0E1529]/80 backdrop-blur-md border-b border-white/10 px-4 py-2 flex items-center gap-2 overflow-x-auto"
-            >
-              {(
-                [
-                  { id: 'dashboard', label: 'Dashboard' },
-                  { id: 'projects', label: 'Projects' },
-                  {
-                    id: 'history',
-                    label: `History${auditEntries.length > 0 ? ` (${auditEntries.length})` : ''}`,
-                  },
-                ] as Array<{ id: AppView; label: string }>
-              ).map((item) => {
-                const isActive = activeView === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setActiveView(item.id)}
-                    className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
-                      isActive
-                        ? 'bg-[#8B7CFF] text-white'
-                        : 'text-[#A6B0C8] bg-white/5 hover:text-[#F4F7FF]'
-                    }`}
-                  >
-                    {item.label}
-                  </button>
-                );
-              })}
-            </nav>
-
-            <AnimatePresence mode="wait" initial={false}>
-              {activeView === 'dashboard' && (
-                <motion.div
-                  key="dashboard"
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -6 }}
-                  transition={VIEW_TRANSITION}
-                >
-                  <WorkbenchView
+                {hasSubmitted && (
+                  <WorkspaceDashboard
                     filename={filename}
-                    testFilename={testFilename}
                     sourceCode={sourceCode}
-                    testCode={testCode}
-                    bugContext={bugContext}
-                    caseDescription={caseDescription}
-                    selectedLanguage={selectedLanguage}
-                    resolvedLanguage={resolvedLanguage}
-                    onChangeLanguage={setSelectedLanguage}
-                    onChangeFilename={setFilename}
-                    onChangeTestFilename={setTestFilename}
-                    onChangeSourceCode={handleEditSourceDirectly}
-                    onChangeTestCode={setTestCode}
-                    onChangeBugContext={setBugContext}
-                    onUploadSource={handleUploadSource}
-                    onResetDemo={handleResetDemo}
-                    canResetDemo={activeDemoId !== null}
-                    analysis={analysis}
-                    unifiedFindings={unifiedFindings}
-                    activeFindingId={activeFindingId}
-                    onSelectFinding={setActiveFindingId}
-                    resolvedFindingIds={resolvedFindingIds}
-                    onApplyFix={handleApplyFix}
-                    onApplyAllSafeFixes={handleApplyAllSafeFixes}
-                    onUndoFix={handleUndoFix}
-                    canUndoFix={undoStack.length > 0}
-                    hasLocalEdits={hasLocalEdits}
-                    onVerifyCurrentCode={handleVerifyCurrentCode}
-                    isValidating={isValidatingManual}
-                    isRunning={isRunning}
+                    report={report}
+                    activeBugId={activeBugId}
+                    decisions={decisions}
+                    isScanning={isScanning}
+                    currentStage={currentStage}
                     errorMessage={errorMessage}
-                    dashboardTab={dashboardTab}
-                    onChangeDashboardTab={setDashboardTab}
-                    onOpenProjects={() => setActiveView('projects')}
-                    explanationMode={explanationMode}
-                    onChangeExplanationMode={setExplanationMode}
-                    stageMode={stageMode}
-                    onChangeStageMode={setStageMode}
-                    voiceNotes={voiceNotes.filter((n) => n.filename === filename)}
-                    onAddVoiceNote={handleAddVoiceNote}
-                    onUpdateVoiceNote={handleUpdateVoiceNote}
-                    onDeleteVoiceNote={handleDeleteVoiceNote}
-                    activeDecision={activeDecision}
-                    auditCount={auditEntries.length}
-                    onRunAnalysis={handleRunAnalysis}
-                    onOpenAudit={() => setActiveView('history')}
-                    onAcceptPatch={handleAcceptPatch}
-                    onRejectPatch={handleRejectPatch}
-                    onDownloadPatched={handleDownloadPatched}
-                    onValidateManualPatch={handleValidateManualPatch}
+                    errorCode={errorCode}
+                    onSelectBug={(id) => {
+                      setActiveBugId(id);
+                      setModalBugId(id);
+                    }}
+                    onRunLocalSandboxFallback={() =>
+                      void executeScan({ mode: 'local-sandbox' })
+                    }
                   />
-                </motion.div>
-              )}
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </main>
 
-              {activeView === 'projects' && (
-                <motion.div
-                  key="projects"
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -6 }}
-                  transition={VIEW_TRANSITION}
-                >
-                  <ProjectsView
-                    demoCases={DEMO_CASES}
-                    activeDemoId={activeDemoId}
-                    currentFilename={filename}
-                    onOpenDemoProject={handleSelectDemo}
-                    onStartBlank={handleStartBlank}
-                    onUploadSource={handleUploadSource}
-                    onUploadTest={handleUploadTest}
-                    onBackToDashboard={() => setActiveView('dashboard')}
-                  />
-                </motion.div>
-              )}
+        {/* Glassmorphism Error Pop-Up */}
+        <BugGlassModal
+          bug={modalBug}
+          bugsCount={bugs.length}
+          currentIndex={modalBugIndex}
+          decision={modalBug ? decisions[modalBug.id] : undefined}
+          onClose={() => setModalBugId(null)}
+          onNavigate={(dir) => {
+            const nextId = getAdjacentBugId(bugs, modalBugId, dir);
+            if (nextId) {
+              setActiveBugId(nextId);
+              setModalBugId(nextId);
+            }
+          }}
+          onAcceptPatch={handleAcceptPatch}
+          onRejectPatch={handleRejectPatch}
+        />
 
-              {activeView === 'history' && (
-                <motion.div
-                  key="history"
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -6 }}
-                  transition={VIEW_TRANSITION}
-                >
-                  <AuditLedgerView
-                    entries={auditEntries}
-                    onClearEntries={() => setAuditEntries([])}
-                    onGoToWorkbench={() => setActiveView('dashboard')}
-                  />
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </main>
-        </div>
+        {/* Lower-Mid Debugging Dock */}
+        <DebuggingDock
+          visible={hasSubmitted && activeScreen === 'workspace'}
+          expanded={dockExpanded}
+          onToggleExpand={() => setDockExpanded((prev) => !prev)}
+          isScanning={isScanning}
+          currentStage={currentStage}
+          report={report}
+          decisions={decisions}
+          errorMessage={errorMessage}
+          onSelectBug={(id) => {
+            setActiveBugId(id);
+            setModalBugId(id);
+          }}
+        />
       </div>
     </MotionConfig>
   );
