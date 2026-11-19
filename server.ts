@@ -1,13 +1,20 @@
+import 'dotenv/config';
 import express from 'express';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runMultiLangAnalysis } from './engine/multi_lang_engine';
+import { runMultiLangAnalysis } from './engine/multi_lang_engine.ts';
+import {
+  runGeminiLatestBugScan,
+  transcribeVoiceNote,
+} from './engine/gemini_bug_scanner.ts';
+import type { AnalysisResponse } from './src/types/autopatch.ts';
 import {
   detectLanguageFromFilename,
   type SupportedLanguage,
-} from './src/utils/languageDetect';
+} from './src/utils/languageDetect.ts';
+import { buildUnifiedFindings } from './src/utils/unifiedFindings.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -72,14 +79,42 @@ function resolveLanguage(explicitLang: unknown, filename: string): SupportedLang
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '8mb' }));
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, engine: 'autopatch-multi-language-sandbox' });
   });
 
+  app.post('/api/transcribe-note', async (req, res) => {
+    const { audioDataUrl, mimeType, bugContext } = req.body ?? {};
+    if (typeof audioDataUrl !== 'string' || !audioDataUrl.includes(',')) {
+      res.status(400).json({ error: 'Valid base64 audio recording is required.' });
+      return;
+    }
+
+    const base64Data = audioDataUrl.slice(audioDataUrl.indexOf(',') + 1).trim();
+    if (!base64Data) {
+      res.status(400).json({ error: 'Audio recording payload is empty.' });
+      return;
+    }
+
+    try {
+      const result = await transcribeVoiceNote({
+        audioBase64: base64Data,
+        mimeType: typeof mimeType === 'string' ? mimeType : 'audio/webm',
+        bugContext: typeof bugContext === 'string' ? bugContext : undefined,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Unable to transcribe voice note.',
+      });
+    }
+  });
+
   app.post('/api/analyze', async (req, res) => {
-    const { filename, testFilename, sourceCode, testCode, bugContext, language } = req.body ?? {};
+    const { filename, testFilename, sourceCode, testCode, bugContext, language, includeAiScan } =
+      req.body ?? {};
     if (typeof sourceCode !== 'string' || !sourceCode.trim()) {
       res.status(400).json({ error: 'Source file cannot be empty.' });
       return;
@@ -93,33 +128,55 @@ async function startServer() {
         ? testFilename.trim()
         : `test_${safeFilename}`;
     const safeBugContext = typeof bugContext === 'string' ? bugContext : '';
+    const enableAi = includeAiScan !== false;
 
     try {
-      if (resolvedLang === 'python') {
-        const result = await runPythonEngine({
-          action: 'analyze',
-          filename: safeFilename,
-          testFilename: safeTestFilename,
-          sourceCode,
-          testCode: typeof testCode === 'string' ? testCode : '',
-          bugContext: safeBugContext,
-          timeoutSeconds: 2.0,
-        });
-        res.json(result);
-        return;
-      }
+      const deterministicPromise =
+        resolvedLang === 'python'
+          ? (runPythonEngine({
+              action: 'analyze',
+              filename: safeFilename,
+              testFilename: safeTestFilename,
+              sourceCode,
+              testCode: typeof testCode === 'string' ? testCode : '',
+              bugContext: safeBugContext,
+              timeoutSeconds: 2.0,
+            }) as unknown as Promise<AnalysisResponse>)
+          : runMultiLangAnalysis({
+              action: 'analyze',
+              language: resolvedLang,
+              filename: safeFilename,
+              testFilename: safeTestFilename,
+              sourceCode,
+              testCode: typeof testCode === 'string' ? testCode : '',
+              bugContext: safeBugContext,
+              timeoutSeconds: 2.0,
+            });
 
-      const result = await runMultiLangAnalysis({
-        action: 'analyze',
-        language: resolvedLang,
-        filename: safeFilename,
-        testFilename: safeTestFilename,
-        sourceCode,
-        testCode: typeof testCode === 'string' ? testCode : '',
-        bugContext: safeBugContext,
-        timeoutSeconds: 2.0,
+      const aiPromise = enableAi
+        ? runGeminiLatestBugScan({
+            filename: safeFilename,
+            language: resolvedLang,
+            sourceCode,
+            bugContext: safeBugContext,
+          })
+        : Promise.resolve({
+            findings: [],
+            aiScanStatus: {
+              status: 'skipped' as const,
+              findingsCount: 0,
+              message: 'AI scan bypassed for deterministic-only run.',
+            },
+          });
+
+      const [detResult, aiResult] = await Promise.all([deterministicPromise, aiPromise]);
+      const unifiedFindings = buildUnifiedFindings(detResult, aiResult.findings);
+
+      res.json({
+        ...detResult,
+        unifiedFindings,
+        aiScanStatus: aiResult.aiScanStatus,
       });
-      res.json(result);
     } catch (err) {
       res.status(500).json({
         error: err instanceof Error ? err.message : 'Failed to run AutoPatch analysis engine.',
@@ -155,39 +212,41 @@ async function startServer() {
     const resolvedLang = resolveLanguage(language, safeFilename);
 
     try {
-      if (resolvedLang === 'python') {
-        const result = await runPythonEngine({
-          action: 'validate',
-          filename: safeFilename,
-          testFilename: safeTestFilename,
-          originalCode: typeof originalCode === 'string' ? originalCode : candidateCode,
-          candidateCode,
-          testCode: typeof testCode === 'string' ? testCode : '',
-          baseline,
-          targetLine,
-          bugType,
-          rootCause,
-          timeoutSeconds: 2.0,
-        });
-        res.json(result);
-        return;
-      }
+      const result =
+        resolvedLang === 'python'
+          ? ((await runPythonEngine({
+              action: 'validate',
+              filename: safeFilename,
+              testFilename: safeTestFilename,
+              originalCode: typeof originalCode === 'string' ? originalCode : candidateCode,
+              candidateCode,
+              testCode: typeof testCode === 'string' ? testCode : '',
+              baseline,
+              targetLine,
+              bugType,
+              rootCause,
+              timeoutSeconds: 2.0,
+            })) as unknown as AnalysisResponse)
+          : await runMultiLangAnalysis({
+              action: 'validate',
+              language: resolvedLang,
+              filename: safeFilename,
+              testFilename: safeTestFilename,
+              originalCode: typeof originalCode === 'string' ? originalCode : candidateCode,
+              candidateCode,
+              testCode: typeof testCode === 'string' ? testCode : '',
+              baseline,
+              targetLine,
+              bugType,
+              rootCause,
+              timeoutSeconds: 2.0,
+            });
 
-      const result = await runMultiLangAnalysis({
-        action: 'validate',
-        language: resolvedLang,
-        filename: safeFilename,
-        testFilename: safeTestFilename,
-        originalCode: typeof originalCode === 'string' ? originalCode : candidateCode,
-        candidateCode,
-        testCode: typeof testCode === 'string' ? testCode : '',
-        baseline,
-        targetLine,
-        bugType,
-        rootCause,
-        timeoutSeconds: 2.0,
+      const unifiedFindings = buildUnifiedFindings(result, []);
+      res.json({
+        ...result,
+        unifiedFindings,
       });
-      res.json(result);
     } catch (err) {
       res.status(500).json({
         error: err instanceof Error ? err.message : 'Failed to validate candidate patch.',

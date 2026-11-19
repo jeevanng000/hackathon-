@@ -6,6 +6,7 @@ import {
   Upload,
   Circle,
   Loader2,
+  FilePlus2,
 } from 'lucide-react';
 import type { AnalysisResponse, DemoCase } from '../types/autopatch';
 
@@ -13,6 +14,7 @@ interface SidebarProps {
   demoCases: DemoCase[];
   activeDemoId: string | null;
   onSelectDemo: (demo: DemoCase) => void;
+  onStartBlank: () => void;
   onUploadSource: (filename: string, content: string) => void;
   onUploadTest: (filename: string, content: string) => void;
   analysis: AnalysisResponse | null;
@@ -41,35 +43,35 @@ function derivePipelineStages(
 ): PipelineStage[] {
   if (isRunning) {
     return [
-      { step: '01', label: 'Detect & Parse', status: 'running', detail: 'Analyzing AST / CFG' },
-      { step: '02', label: 'Diagnose & Root-Cause', status: 'running', detail: 'Running baseline suite' },
-      { step: '03', label: 'Safe Patch Generator', status: 'idle', detail: 'Waiting' },
-      { step: '04', label: 'Sandbox Validation', status: 'idle', detail: 'Waiting' },
-      { step: '05', label: 'Audit & Diff Review', status: 'idle', detail: 'Waiting' },
+      { step: '01', label: 'Static & AI Scan', status: 'running', detail: 'AST + Latest bug check' },
+      { step: '02', label: 'Run Tests', status: 'running', detail: 'Isolated baseline run' },
+      { step: '03', label: 'Prepare Line Fixes', status: 'idle', detail: 'Waiting' },
+      { step: '04', label: 'Verify Patch', status: 'idle', detail: 'Waiting' },
+      { step: '05', label: 'Save Decision', status: 'idle', detail: 'Waiting' },
     ];
   }
 
   if (!analysis) {
     return [
-      { step: '01', label: 'Detect & Parse', status: 'idle', detail: 'AST, CFG & Taint scan' },
-      { step: '02', label: 'Diagnose & Root-Cause', status: 'idle', detail: 'Isolated sandbox / static' },
-      { step: '03', label: 'Safe Patch Generator', status: 'idle', detail: 'Template & Mutation APR' },
-      { step: '04', label: 'Sandbox Validation', status: 'idle', detail: '2.0s timeout verifier' },
-      { step: '05', label: 'Audit & Diff Review', status: 'idle', detail: 'Human approval gate' },
+      { step: '01', label: 'Static & AI Scan', status: 'idle', detail: 'AST, CFG & Gemini check' },
+      { step: '02', label: 'Run Tests', status: 'idle', detail: 'Isolated sandbox' },
+      { step: '03', label: 'Prepare Line Fixes', status: 'idle', detail: 'One-click line repairs' },
+      { step: '04', label: 'Verify Patch', status: 'idle', detail: '2.0s timeout verifier' },
+      { step: '05', label: 'Save Decision', status: 'idle', detail: 'Audit ledger & export' },
     ];
   }
 
-  const astFindings = analysis.astReport.findings.length;
+  const totalFindings = analysis.unifiedFindings?.length ?? analysis.astReport.findings.length;
   const stage1: PipelineStage = {
     step: '01',
-    label: 'Detect & Parse',
-    status: astFindings > 0 ? 'warning' : 'passed',
-    detail: `${astFindings} finding${astFindings === 1 ? '' : 's'} · ${analysis.astReport.durationMs.toFixed(1)}ms`,
+    label: 'Static & AI Scan',
+    status: totalFindings > 0 ? 'warning' : 'passed',
+    detail: `${totalFindings} issue${totalFindings === 1 ? '' : 's'} · ${analysis.astReport.durationMs.toFixed(1)}ms`,
   };
 
   const stage2: PipelineStage = {
     step: '02',
-    label: 'Diagnose & Root-Cause',
+    label: 'Run Tests',
     status: analysis.baseline.failed > 0 || analysis.baseline.timedOut ? 'warning' : 'passed',
     detail: analysis.baseline.timedOut
       ? `Timeout · ${analysis.baseline.durationMs.toFixed(0)}ms`
@@ -78,7 +80,7 @@ function derivePipelineStages(
 
   const stage3: PipelineStage = {
     step: '03',
-    label: 'Safe Patch Generator',
+    label: 'Prepare Line Fixes',
     status: analysis.patchInfo.patchApplied
       ? 'passed'
       : analysis.trustVerdict === 'already_passing'
@@ -88,12 +90,12 @@ function derivePipelineStages(
       ? `+${analysis.diff.linesAdded} -${analysis.diff.linesRemoved} lines`
       : analysis.trustVerdict === 'already_passing'
       ? 'No fix needed'
-      : 'Manual review needed',
+      : 'Manual edit needed',
   };
 
   const stage4: PipelineStage = {
     step: '04',
-    label: 'Sandbox Validation',
+    label: 'Verify Patch',
     status:
       analysis.trustVerdict === 'verified' || analysis.trustVerdict === 'already_passing'
         ? 'passed'
@@ -105,13 +107,13 @@ function derivePipelineStages(
 
   const stage5: PipelineStage = {
     step: '05',
-    label: 'Audit & Diff Review',
+    label: 'Save Decision',
     status: decisionRecorded ? 'passed' : analysis.trustVerdict === 'blocked' ? 'blocked' : 'warning',
     detail: decisionRecorded
-      ? 'Logged in audit ledger'
+      ? 'Saved to ledger'
       : analysis.trustVerdict === 'blocked'
-      ? 'Human override or edit'
-      : 'Awaiting decision',
+      ? 'Review or edit line'
+      : 'Ready to accept',
   };
 
   return [stage1, stage2, stage3, stage4, stage5];
@@ -121,6 +123,7 @@ export function Sidebar({
   demoCases,
   activeDemoId,
   onSelectDemo,
+  onStartBlank,
   onUploadSource,
   onUploadTest,
   analysis,
@@ -150,11 +153,11 @@ export function Sidebar({
 
   const sidebarContent = (
     <div className="flex flex-col h-full bg-white dark:bg-[#111827] border-r border-slate-200 dark:border-slate-800 w-[268px] shrink-0 overflow-y-auto">
-      {/* Section 1: Golden Demo Cases */}
+      {/* Section 1: Sample Programs */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-800">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-display text-xs font-semibold tracking-wide text-slate-500 dark:text-slate-400">
-            Golden Demo Cases
+            Sample Programs
           </h2>
           <span className="font-mono text-xs tabular-nums text-slate-400 dark:text-slate-500">
             {demoCases.length}
@@ -175,15 +178,15 @@ export function Sidebar({
                 aria-pressed={isSelected}
                 className={`w-full text-left px-3 py-2.5 rounded-md transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#2563EB] ${
                   isSelected
-                    ? 'bg-slate-100 dark:bg-slate-800 text-slate-950 dark:text-white'
-                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:text-slate-950 dark:hover:text-white'
+                    ? 'bg-blue-50/80 dark:bg-blue-950/40 text-slate-950 dark:text-white border border-blue-200/80 dark:border-blue-800/70'
+                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:text-slate-950 dark:hover:text-white border border-transparent'
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium truncate">{demo.title}</span>
                   {demo.expectedOutcome === 'blocked-review' && (
                     <span className="text-[11px] font-medium text-[#B45309] dark:text-amber-400 shrink-0">
-                      Gate
+                      Review
                     </span>
                   )}
                 </div>
@@ -198,10 +201,10 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* Section 2: Upload Custom Source / Test Files (Any Language) */}
+      {/* Section 2: Paste New or Upload Local Files */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-800">
         <h2 className="font-display text-xs font-semibold tracking-wide text-slate-500 dark:text-slate-400 mb-3">
-          Load Local Files (Any Language)
+          Check Your Own Code
         </h2>
 
         <input
@@ -230,6 +233,17 @@ export function Sidebar({
         <div className="grid grid-cols-1 gap-2">
           <button
             type="button"
+            onClick={() => {
+              onStartBlank();
+              onCloseMobile();
+            }}
+            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-[#2563EB] dark:text-blue-400 bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800/70 hover:bg-blue-100/70 dark:hover:bg-blue-950/50 rounded-md transition-colors cursor-pointer"
+          >
+            <FilePlus2 className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Paste New Code</span>
+          </button>
+          <button
+            type="button"
             onClick={() => sourceInputRef.current?.click()}
             className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 hover:border-slate-300 dark:hover:border-slate-600 rounded-md transition-colors cursor-pointer"
           >
@@ -247,10 +261,10 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* Section 3: 5-Stage Pipeline Execution Rail */}
+      {/* Section 3: Scan Progress Rail */}
       <div className="p-4 flex-1">
         <h2 className="font-display text-xs font-semibold tracking-wide text-slate-500 dark:text-slate-400 mb-3">
-          Trust Pipeline Stages
+          Scan &amp; Repair Stages
         </h2>
         <ol className="space-y-3">
           {stages.map((stage) => (
@@ -294,12 +308,10 @@ export function Sidebar({
 
   return (
     <>
-      {/* Desktop persistent sidebar */}
-      <aside aria-label="Demo cases and pipeline stages" className="hidden lg:block shrink-0">
+      <aside aria-label="Sample programs and scan stages" className="hidden lg:block shrink-0">
         {sidebarContent}
       </aside>
 
-      {/* Mobile slide-over drawer */}
       {mobileOpen && (
         <div className="fixed inset-0 z-40 lg:hidden flex">
           <div
@@ -313,7 +325,7 @@ export function Sidebar({
           >
             <div className="flex items-center justify-between px-4 h-14 border-b border-slate-200 dark:border-slate-800">
               <span className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100">
-                Workspace
+                Programs &amp; Files
               </span>
               <button
                 type="button"

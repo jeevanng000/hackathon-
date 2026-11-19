@@ -135,6 +135,38 @@ export interface ConfidenceBreakdown {
 
 export type TrustVerdict = 'verified' | 'blocked' | 'already_passing';
 
+export type BugCategory = 'security' | 'runtime' | 'logic' | 'modern';
+export type BugSeverity = 'critical' | 'warning' | 'info';
+export type BugSource = 'static-ast' | 'sandbox-runtime' | 'ai-latest';
+export type ExplanationMode = 'plain' | 'technical';
+
+export interface UnifiedBugFinding {
+  id: string;
+  line: number;
+  endLine: number;
+  source: BugSource;
+  category: BugCategory;
+  severity: BugSeverity;
+  title: string;
+  kind: string;
+  plainEnglishExplanation: string;
+  technicalExplanation: string;
+  impactSummary: string;
+  originalSnippet: string;
+  suggestedReplacement: string | null;
+  canAutoFix: boolean;
+  cweOrRule?: string;
+  isModernPattern?: boolean;
+}
+
+export interface AiScanStatus {
+  status: 'ok' | 'skipped' | 'error';
+  model?: string;
+  message?: string;
+  findingsCount: number;
+  durationMs?: number;
+}
+
 export interface AnalysisResponse {
   filename: string;
   testFilename: string;
@@ -150,6 +182,23 @@ export interface AnalysisResponse {
   diff: DiffData;
   confidence: ConfidenceBreakdown;
   trustVerdict: TrustVerdict;
+  unifiedFindings?: UnifiedBugFinding[];
+  aiScanStatus?: AiScanStatus;
+}
+
+export interface VoiceNote {
+  id: string;
+  findingId: string;
+  filename: string;
+  line: number;
+  bugTitle: string;
+  createdAt: string;
+  durationSec: number;
+  mimeType: string;
+  audioDataUrl: string;
+  transcript: string;
+  transcriptionStatus: 'transcribing' | 'completed' | 'failed' | 'manual';
+  transcriptionError?: string;
 }
 
 export type AuditDecision = 'accepted' | 'rejected' | 'override' | 'blocked';
@@ -172,6 +221,8 @@ export interface AuditEntry {
   overrideReason?: string;
   linesAdded: number;
   linesRemoved: number;
+  voiceNoteCount?: number;
+  voiceNotesSummary?: string;
 }
 
 export interface DemoCase {

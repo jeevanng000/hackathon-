@@ -12,8 +12,13 @@ import {
 } from './diffAndAudit';
 import { classifySuspiciousness, computeOchiai, computeTarantula } from './sbfl';
 import { detectLanguageFromFilename, getLanguageMeta, type SupportedLanguage } from './languageDetect';
+import {
+  applyAllSafeFixesToSource,
+  applyFindingFixToSource,
+  buildUnifiedFindings,
+} from './unifiedFindings';
 import { DEMO_CASES } from '../data/demoCases';
-import type { AnalysisResponse } from '../types/autopatch';
+import type { AnalysisResponse, VoiceNote } from '../types/autopatch';
 import { runMultiLangAnalysis } from '../../engine/multi_lang_engine';
 
 const ENGINE_PATH = path.resolve(process.cwd(), 'engine', 'autopatch_engine.py');
@@ -292,3 +297,97 @@ test('Audit entry creation, filtering, CSV serialization, and 5-section Markdown
   assert.ok(md.includes('### 4. REGRESSION & EDGE-CASE TEST SUITE'));
   assert.ok(md.includes('### 5. AUDIT LOG ENTRY'));
 });
+
+test('Unified per-line bug findings map categories, plain-English text, and clean line fixes', () => {
+  const authDemo = DEMO_CASES.find((d) => d.id === 'auth-service-none-sub')!;
+  const analysis = runPythonEngineSync({
+    action: 'analyze',
+    filename: authDemo.filename,
+    testFilename: authDemo.testFilename,
+    sourceCode: authDemo.sourceCode,
+    testCode: authDemo.testCode,
+    timeoutSeconds: 1.5,
+  });
+
+  const unified = buildUnifiedFindings(analysis, [
+    {
+      id: 'ai-modern-1',
+      line: 1,
+      endLine: 1,
+      source: 'ai-latest',
+      category: 'modern',
+      severity: 'warning',
+      title: 'Plaintext password comparison risk',
+      kind: 'CWE-256',
+      plainEnglishExplanation: 'Comparing raw passwords directly without hashing exposes stored credentials.',
+      technicalExplanation: 'Direct string equality against plaintext password field.',
+      impactSummary: 'Stored passwords should use constant-time hash verification.',
+      originalSnippet: authDemo.sourceCode.split('\n')[0],
+      suggestedReplacement: null,
+      canAutoFix: false,
+      cweOrRule: 'CWE-256',
+      isModernPattern: true,
+    },
+  ]);
+
+  assert.ok(unified.length >= 2);
+  assert.ok(unified.some((f) => f.category === 'modern' && f.source === 'ai-latest'));
+  assert.ok(unified.some((f) => f.canAutoFix && f.plainEnglishExplanation.length > 10));
+
+  const fixable = unified.find((f) => f.canAutoFix)!;
+  const singleFixed = applyFindingFixToSource(authDemo.sourceCode, fixable);
+  assert.notEqual(singleFixed, authDemo.sourceCode);
+
+  const { updatedCode, appliedIds } = applyAllSafeFixesToSource(authDemo.sourceCode, unified);
+  assert.ok(appliedIds.length >= 1);
+  assert.ok(updatedCode.includes('is not None'));
+});
+
+test('Voice notes attach reasoning into audit entries, CSV export, and Markdown reports', () => {
+  const retryDemo = DEMO_CASES.find((d) => d.id === 'retry-loop-blocked')!;
+  const analysis = runPythonEngineSync({
+    action: 'analyze',
+    filename: retryDemo.filename,
+    testFilename: retryDemo.testFilename,
+    sourceCode: retryDemo.sourceCode,
+    testCode: retryDemo.testCode,
+    timeoutSeconds: 1.5,
+  });
+
+  const sampleNotes: VoiceNote[] = [
+    {
+      id: 'vn-test-1',
+      findingId: 'unified-sbfl-1',
+      filename: retryDemo.filename,
+      line: 10,
+      bugTitle: 'Infinite retry loop on malformed job',
+      createdAt: '2026-11-19T06:00:00.000Z',
+      durationSec: 12,
+      mimeType: 'audio/webm',
+      audioDataUrl: 'data:audio/webm;base64,AAAA',
+      transcript: 'Skipped malformed jobs manually before moving to dead-letter queue.',
+      transcriptionStatus: 'completed',
+    },
+  ];
+
+  const entry = buildAuditEntry({
+    analysis,
+    decision: 'override',
+    overrideReason: sampleNotes[0].transcript,
+    voiceNotes: sampleNotes,
+    now: new Date('2026-11-19T06:01:00.000Z'),
+  });
+
+  assert.equal(entry.voiceNoteCount, 1);
+  assert.ok(entry.voiceNotesSummary?.includes('Skipped malformed jobs manually'));
+  assert.equal(filterAuditEntries([entry], 'all', 'dead-letter').length, 1);
+
+  const csv = serializeAuditToCsv([entry]);
+  assert.ok(csv.includes('Voice Notes'));
+  assert.ok(csv.includes('Skipped malformed jobs manually'));
+
+  const md = formatStructuredMarkdownReport(analysis, retryDemo.testCode, 'override', sampleNotes);
+  assert.ok(md.includes('Developer Voice Notes'));
+  assert.ok(md.includes('1 attached'));
+});
+

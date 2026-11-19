@@ -7,6 +7,7 @@ import {
   XCircle,
   ShieldAlert,
   AlertTriangle,
+  Mic,
 } from 'lucide-react';
 import type { AuditEntry } from '../types/autopatch';
 import {
@@ -290,6 +291,18 @@ export function AuditLedgerView({
                       {entry.overrideReason && (
                         <p className="mt-1 text-[11px] text-[#92400E] dark:text-amber-300">
                           Override note: {entry.overrideReason}
+                        </p>
+                      )}
+                      {entry.voiceNoteCount && entry.voiceNoteCount > 0 && (
+                        <p className="mt-1 flex items-start gap-1 text-[11px] text-slate-600 dark:text-slate-400">
+                          <Mic
+                            className="w-3 h-3 mt-0.5 text-[#DC2626] dark:text-rose-400 shrink-0"
+                            aria-hidden="true"
+                          />
+                          <span>
+                            {entry.voiceNoteCount} voice note{entry.voiceNoteCount === 1 ? '' : 's'}
+                            {entry.voiceNotesSummary ? `: ${entry.voiceNotesSummary}` : ''}
+                          </span>
                         </p>
                       )}
                     </td>

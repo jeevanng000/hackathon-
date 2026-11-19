@@ -3,7 +3,23 @@ import type {
   AuditDecision,
   AuditEntry,
   TrustVerdict,
+  VoiceNote,
 } from '../types/autopatch';
+
+export function summarizeVoiceNotes(notes?: VoiceNote[]): string | undefined {
+  if (!notes || notes.length === 0) return undefined;
+  return notes
+    .map((n) => {
+      const text = n.transcript.trim();
+      const mins = Math.floor(Math.max(0, n.durationSec) / 60);
+      const secs = Math.max(0, Math.round(n.durationSec)) % 60;
+      const dur = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+      return text
+        ? `L${n.line} (${n.bugTitle}, ${dur}): "${text}"`
+        : `L${n.line} (${n.bugTitle}, ${dur} audio note)`;
+    })
+    .join(' | ');
+}
 
 export interface TrustGateState {
   canAcceptDirectly: boolean;
@@ -61,9 +77,11 @@ export function buildAuditEntry(params: {
   analysis: AnalysisResponse;
   decision: AuditDecision;
   overrideReason?: string;
+  voiceNotes?: VoiceNote[];
   now?: Date;
 }): AuditEntry {
-  const { analysis, decision, overrideReason, now = new Date() } = params;
+  const { analysis, decision, overrideReason, voiceNotes = [], now = new Date() } = params;
+  const voiceNotesSummary = summarizeVoiceNotes(voiceNotes);
   return {
     id: `aud-${now.getTime()}-${Math.random().toString(36).slice(2, 7)}`,
     timestamp: now.toISOString(),
@@ -82,6 +100,8 @@ export function buildAuditEntry(params: {
     overrideReason: overrideReason?.trim() || undefined,
     linesAdded: analysis.diff.linesAdded,
     linesRemoved: analysis.diff.linesRemoved,
+    voiceNoteCount: voiceNotes.length > 0 ? voiceNotes.length : undefined,
+    voiceNotesSummary,
   };
 }
 
@@ -107,6 +127,7 @@ export function filterAuditEntries(
       entry.ruleId,
       entry.summary,
       entry.overrideReason ?? '',
+      entry.voiceNotesSummary ?? '',
       entry.line != null ? `line ${entry.line}` : '',
     ]
       .join(' ')
@@ -143,6 +164,7 @@ export function serializeAuditToCsv(entries: AuditEntry[]): string {
     'Lines Removed',
     'Summary',
     'Override Justification',
+    'Voice Notes',
   ];
 
   const rows = entries.map((e) =>
@@ -162,6 +184,7 @@ export function serializeAuditToCsv(entries: AuditEntry[]): string {
       e.linesRemoved,
       e.summary,
       e.overrideReason ?? '',
+      e.voiceNotesSummary ?? '',
     ]
       .map(escapeCsvCell)
       .join(',')
@@ -191,7 +214,8 @@ export function formatAuditTimestamp(iso: string): string {
 export function formatStructuredMarkdownReport(
   analysis: AnalysisResponse,
   testCode: string,
-  decision: AuditDecision | null = null
+  decision: AuditDecision | null = null,
+  voiceNotes: VoiceNote[] = []
 ): string {
   const lineTarget =
     analysis.patchInfo.targetLine ??
@@ -229,6 +253,8 @@ export function formatStructuredMarkdownReport(
       ? 'BASELINE ALREADY PASSING'
       : 'BLOCKED (HUMAN REVIEW REQUIRED)';
 
+  const voiceNotesSummary = summarizeVoiceNotes(voiceNotes);
+
   return [
     '### 1. BUG SUMMARY & TRIAGE',
     `- **Target Component**: \`${analysis.filename}\` (Line ${lineTarget})`,
@@ -242,6 +268,9 @@ export function formatStructuredMarkdownReport(
     `- **Repair Strategy**: ${analysis.patchInfo.strategy}`,
     ...(analysis.baseline.errorMessage
       ? [`- **Failing Runtime Exception**: \`${analysis.baseline.errorType || 'Error'}: ${analysis.baseline.errorMessage}\``]
+      : []),
+    ...(voiceNotesSummary
+      ? [`- **Developer Voice Notes**: ${voiceNotesSummary}`]
       : []),
     '',
     '### 3. MINIMAL SURGICAL PATCH (UNIFIED DIFF)',
@@ -263,6 +292,9 @@ export function formatStructuredMarkdownReport(
     `| **Confidence** | \`${analysis.confidence.score}%\` |`,
     `| **Verification** | \`${analysis.sandbox.passed}/${analysis.sandbox.total} passed\` (\`${analysis.sandbox.durationMs.toFixed(1)} ms\`) |`,
     `| **Trust Gate Status** | \`${verdictLabel}\` |`,
+    ...(voiceNotes.length > 0
+      ? [`| **Voice Notes** | \`${voiceNotes.length} attached\` |`]
+      : []),
   ].join('\n');
 }
 

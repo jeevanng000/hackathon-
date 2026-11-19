@@ -19,13 +19,13 @@ import type {
   TestCaseResult,
   TestRunResult,
   TrustVerdict,
-} from '../src/types/autopatch';
+} from '../src/types/autopatch.ts';
 import {
   detectLanguageFromFilename,
   getLanguageMeta,
   type SupportedLanguage,
-} from '../src/utils/languageDetect';
-import { computeOchiai, computeTarantula } from '../src/utils/sbfl';
+} from '../src/utils/languageDetect.ts';
+import { computeOchiai, computeTarantula } from '../src/utils/sbfl.ts';
 
 export interface MultiLangRequest {
   action: 'analyze' | 'validate';

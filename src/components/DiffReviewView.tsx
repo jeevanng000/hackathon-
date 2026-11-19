@@ -10,8 +10,13 @@ import {
   ChevronDown,
   ChevronUp,
   ArrowLeft,
+  Mic,
 } from 'lucide-react';
-import type { AnalysisResponse, AuditDecision } from '../types/autopatch';
+import type {
+  AnalysisResponse,
+  AuditDecision,
+  VoiceNote,
+} from '../types/autopatch';
 import {
   evaluateTrustGate,
   formatStructuredMarkdownReport,
@@ -33,6 +38,7 @@ interface DiffReviewViewProps {
   onValidateManualPatch: (candidateCode: string) => Promise<void>;
   isValidatingManual: boolean;
   onBackToWorkbench: () => void;
+  voiceNotes?: VoiceNote[];
 }
 
 type DiffTab = 'split' | 'unified' | 'report' | 'edit';
@@ -47,6 +53,7 @@ export function DiffReviewView({
   onValidateManualPatch,
   isValidatingManual,
   onBackToWorkbench,
+  voiceNotes = [],
 }: DiffReviewViewProps) {
   const [diffTab, setDiffTab] = useState<DiffTab>('split');
   const [manualCode, setManualCode] = useState(analysis?.patchedCode ?? '');
@@ -99,8 +106,14 @@ export function DiffReviewView({
   const structuredReport = formatStructuredMarkdownReport(
     analysis,
     testCode,
-    activeDecision
+    activeDecision,
+    voiceNotes
   );
+
+  const combinedTranscriptReasoning = voiceNotes
+    .map((n) => n.transcript.trim())
+    .filter(Boolean)
+    .join(' ');
 
   const handleCopyUnified = () => {
     const text =
@@ -741,6 +754,42 @@ export function DiffReviewView({
           </div>
         </div>
 
+        {/* Attached Developer Voice Notes */}
+        {voiceNotes.length > 0 && (
+          <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-200">
+              <Mic className="w-3.5 h-3.5 text-[#DC2626] dark:text-rose-400" aria-hidden="true" />
+              <span>Attached Developer Voice Notes ({voiceNotes.length})</span>
+            </div>
+            <ul className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {voiceNotes.map((note) => (
+                <li
+                  key={note.id}
+                  className="p-2.5 bg-slate-50 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-700 rounded-md space-y-1.5 text-xs"
+                >
+                  <div className="flex items-center justify-between gap-2 text-slate-600 dark:text-slate-300">
+                    <span className="font-mono font-semibold tabular-nums">
+                      Line {note.line}
+                    </span>
+                    <span className="truncate font-medium">{note.bugTitle}</span>
+                  </div>
+                  <audio
+                    controls
+                    preload="metadata"
+                    src={note.audioDataUrl}
+                    className="w-full h-8"
+                  />
+                  {note.transcript.trim() && (
+                    <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
+                      &ldquo;{note.transcript.trim()}&rdquo;
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {/* Explicit Human Override Panel when Sandbox Blocks the Patch */}
         {gate.requiresOverride && activeDecision !== 'override' && (
           <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
@@ -758,12 +807,24 @@ export function DiffReviewView({
 
             {overrideEnabled && (
               <div className="space-y-1.5 max-w-xl">
-                <label
-                  htmlFor="override-reason"
-                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
-                >
-                  Override Justification (minimum 8 characters)
-                </label>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label
+                    htmlFor="override-reason"
+                    className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                  >
+                    Override Justification (minimum 8 characters)
+                  </label>
+                  {combinedTranscriptReasoning && (
+                    <button
+                      type="button"
+                      onClick={() => setOverrideReason(combinedTranscriptReasoning)}
+                      className="inline-flex items-center gap-1 text-xs font-medium text-[#2563EB] dark:text-blue-400 hover:text-[#1D4ED8] dark:hover:text-blue-300 cursor-pointer"
+                    >
+                      <Mic className="w-3 h-3" aria-hidden="true" />
+                      <span>Use Voice Note Reasoning</span>
+                    </button>
+                  )}
+                </div>
                 <input
                   id="override-reason"
                   type="text"

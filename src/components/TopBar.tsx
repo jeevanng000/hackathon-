@@ -1,4 +1,4 @@
-import { Menu, Play, Loader2, Sun, Moon } from 'lucide-react';
+import { Menu, Radar, Loader2 } from 'lucide-react';
 import type { AppView } from '../types/autopatch';
 
 interface TopBarProps {
@@ -9,8 +9,6 @@ interface TopBarProps {
   hasAnalysis: boolean;
   auditCount: number;
   onToggleMobileMenu: () => void;
-  theme: 'light' | 'dark';
-  onToggleTheme: () => void;
 }
 
 export function TopBar({
@@ -21,18 +19,16 @@ export function TopBar({
   hasAnalysis,
   auditCount,
   onToggleMobileMenu,
-  theme,
-  onToggleTheme,
 }: TopBarProps) {
   const navItems: Array<{ id: AppView; label: string; count?: number }> = [
-    { id: 'workbench', label: 'Workbench' },
+    { id: 'workbench', label: 'Inspector' },
     { id: 'review', label: 'Diff & Review' },
     { id: 'audit', label: 'Audit Ledger', count: auditCount },
   ];
 
   return (
     <header className="sticky top-0 z-30 h-14 bg-white dark:bg-[#111827] border-b border-slate-200 dark:border-slate-800 px-4 lg:px-6 flex items-center justify-between gap-4 lg:gap-8">
-      {/* Zone 1: Single-element brand wordmark (+ mobile menu toggle on narrow viewports) */}
+      {/* Zone 1: Single-element brand wordmark (+ mobile menu trigger on < lg) */}
       <div className="flex items-center gap-3 shrink-0">
         <button
           type="button"
@@ -51,7 +47,7 @@ export function TopBar({
         </button>
       </div>
 
-      {/* Zone 2: Concise single-line navigation links (desktop/tablet) */}
+      {/* Zone 2: Concise single-line navigation links */}
       <nav aria-label="Primary workspace views" className="hidden md:flex items-center gap-6 min-w-0">
         {navItems.map((item) => {
           const isActive = activeView === item.id;
@@ -91,28 +87,8 @@ export function TopBar({
         })}
       </nav>
 
-      {/* Zone 3: Theme Switcher + Primary Action */}
-      <div className="flex items-center gap-2.5 shrink-0">
-        <button
-          type="button"
-          onClick={onToggleTheme}
-          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-          className="inline-flex items-center gap-1.5 h-9 px-2.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2563EB]"
-        >
-          {theme === 'dark' ? (
-            <>
-              <Sun className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
-              <span className="hidden sm:inline">Light</span>
-            </>
-          ) : (
-            <>
-              <Moon className="w-3.5 h-3.5 text-slate-600" aria-hidden="true" />
-              <span className="hidden sm:inline">Dark</span>
-            </>
-          )}
-        </button>
-
+      {/* Zone 3: Single Primary Action */}
+      <div className="flex items-center shrink-0">
         <button
           type="button"
           onClick={onRunAnalysis}
@@ -122,9 +98,9 @@ export function TopBar({
           {isRunning ? (
             <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
           ) : (
-            <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" />
+            <Radar className="w-4 h-4" aria-hidden="true" />
           )}
-          <span>{isRunning ? 'Analyzing...' : 'Run Analysis'}</span>
+          <span>{isRunning ? 'Scanning Code...' : 'Scan & Find Bugs'}</span>
         </button>
       </div>
     </header>
