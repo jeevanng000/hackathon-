@@ -176,6 +176,7 @@ export default function App() {
             body: JSON.stringify({
               sourceCode: codeVal,
               errorStatement: errVal,
+              testCode: testVal.trim() ? testVal : undefined,
               filename: safeName,
               language: lang,
             }),
@@ -280,8 +281,12 @@ export default function App() {
       setModalBugId(null);
       return;
     }
-    const { updatedCode } = applyPatchToCode(sourceCode, bug);
-    setSourceCode(updatedCode);
+    if (!sourceCode.trim() && bug.after_code.trim()) {
+      setSourceCode(bug.after_code);
+    } else {
+      const { updatedCode } = applyPatchToCode(sourceCode, bug);
+      setSourceCode(updatedCode);
+    }
     setDecisions((prev) => ({ ...prev, [bug.id]: 'Accepted' }));
 
     const entry = createHistoryEntry({

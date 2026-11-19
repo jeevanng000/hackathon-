@@ -382,21 +382,43 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
 
     if (!checkRateLimit(req, res, 'ai', limits.maxAiRequestsPerMinute)) return;
 
-    const { sourceCode, errorStatement, filename, language, projectId } = req.body ?? {};
-    if (typeof sourceCode !== 'string' || !sourceCode.trim()) {
-      res.status(400).json({ error: 'sourceCode cannot be empty.' });
+    const { sourceCode, errorStatement, testCode, filename, language, projectId } = req.body ?? {};
+    if (sourceCode !== undefined && sourceCode !== null && typeof sourceCode !== 'string') {
+      res.status(400).json({ error: 'sourceCode must be a string when provided.' });
       return;
     }
-    if (Buffer.byteLength(sourceCode, 'utf-8') > limits.maxSourceSizeBytes) {
+    if (errorStatement !== undefined && errorStatement !== null && typeof errorStatement !== 'string') {
+      res.status(400).json({ error: 'errorStatement must be a string when provided.' });
+      return;
+    }
+    if (testCode !== undefined && testCode !== null && typeof testCode !== 'string') {
+      res.status(400).json({ error: 'testCode must be a string when provided.' });
+      return;
+    }
+
+    const safeSource = typeof sourceCode === 'string' ? sourceCode : '';
+    const safeError = typeof errorStatement === 'string' ? errorStatement : '';
+    const safeTestCode = typeof testCode === 'string' ? testCode : '';
+
+    if (!safeSource.trim() && !safeError.trim()) {
+      res.status(400).json({ error: 'Provide sourceCode or an errorStatement to analyze.' });
+      return;
+    }
+    if (Buffer.byteLength(safeSource, 'utf-8') > limits.maxSourceSizeBytes) {
       res.status(413).json({
         error: `Source code exceeds maximum size limit (${limits.maxSourceSizeBytes} bytes).`,
       });
       return;
     }
-    const safeError = typeof errorStatement === 'string' ? errorStatement : '';
     if (Buffer.byteLength(safeError, 'utf-8') > limits.maxContextSizeBytes) {
       res.status(413).json({
         error: `errorStatement exceeds maximum size limit (${limits.maxContextSizeBytes} bytes).`,
+      });
+      return;
+    }
+    if (Buffer.byteLength(safeTestCode, 'utf-8') > limits.maxTestSizeBytes) {
+      res.status(413).json({
+        error: `testCode exceeds maximum size limit (${limits.maxTestSizeBytes} bytes).`,
       });
       return;
     }
@@ -416,13 +438,14 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       const graphCtx = await fetchBestEffortGraphContext({
         projectId: projCheck.projectId,
         filename: resolvedFilename,
-        sourceCode,
+        sourceCode: safeSource || safeError,
         bugContext: safeError,
       });
 
       const report = await runGeminiAutoPatchWorkflow({
-        sourceCode,
+        sourceCode: safeSource,
         errorStatement: safeError,
+        testCode: safeTestCode,
         filename: resolvedFilename,
         language: resolvedLang,
         graphRagContext: graphCtx.promptContext || undefined,
@@ -1546,7 +1569,7 @@ async function startServer() {
 
   const app = createAutoPatchApp();
   const server = http.createServer(app);
-  server.requestTimeout = 30_000;
+  server.requestTimeout = 60_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5_000;
   const isProd = process.env.NODE_ENV === 'production';

@@ -145,7 +145,7 @@ export function loadAppEnvConfig(): AppEnvConfig {
       transcribeModel: readString('GEMINI_TRANSCRIBE_MODEL', 'gemini-3.5-transcribe'),
       embeddingModel: readString('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001'),
       embeddingDimensions: readInt('GEMINI_EMBEDDING_DIMENSIONS', 768, 128, 3072),
-      timeoutMs: readInt('GEMINI_TIMEOUT_MS', 15000, 1500, 45000),
+      timeoutMs: readInt('GEMINI_TIMEOUT_MS', 20000, 1500, 45000),
       transcribeTimeoutMs: readInt('GEMINI_TRANSCRIBE_TIMEOUT_MS', 15000, 2000, 45000),
       dailyQuota: readInt('GEMINI_DAILY_QUOTA', 500, 10, 100000),
     },

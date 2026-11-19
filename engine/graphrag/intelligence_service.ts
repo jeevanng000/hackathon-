@@ -5,6 +5,7 @@ import {
   getSharedGeminiClient,
   runWithTimeout,
 } from '../gemini_client.ts';
+import { parseGeminiJsonSafely } from '../gemini_bug_scanner.ts';
 import {
   runReadQuery as defaultRunReadQuery,
   toJsNumber,
@@ -192,7 +193,13 @@ async function runGroundedGeminiJson<T>(
   const cfg = loadAppEnvConfig().gemini;
   const candidateModels = Array.from(new Set([cfg.model, 'gemini-3.1-flash-lite']));
 
-  for (const activeModel of candidateModels) {
+  for (let idx = 0; idx < candidateModels.length; idx++) {
+    const activeModel = candidateModels[idx];
+    const isPrimary = idx === 0 && candidateModels.length > 1;
+    const attemptTimeout = isPrimary
+      ? Math.min(12000, Math.max(6000, cfg.timeoutMs))
+      : Math.max(10000, cfg.timeoutMs);
+
     try {
       const isGemini4 = activeModel.startsWith('gemini-4-');
       const response = await runWithTimeout(
@@ -207,11 +214,11 @@ async function runGroundedGeminiJson<T>(
               responseSchema: params.schema,
             },
           }),
-        Math.max(cfg.timeoutMs, 15_000)
+        attemptTimeout
       );
-      const raw = (response.text || '').trim();
-      if (!raw) continue;
-      return JSON.parse(raw) as T;
+      const parsed = parseGeminiJsonSafely<T>(response.text);
+      if (!parsed || typeof parsed !== 'object') continue;
+      return parsed;
     } catch (err) {
       const reason = redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 200);
       console.warn(

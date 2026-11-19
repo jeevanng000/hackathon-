@@ -13,6 +13,8 @@ import {
 } from './multi_lang_engine.ts';
 import {
   parseAndValidateAiFindings,
+  parseGeminiJsonSafely,
+  reconcileAndValidateAutoPatchReport,
   validateAudioPayload,
 } from './gemini_bug_scanner.ts';
 import {
@@ -721,4 +723,109 @@ test('HTTP API enforces Content-Type 415, API 404 JSON catch-all, strict /api/au
     await close();
   }
 });
+
+test('parseGeminiJsonSafely and reconcileAndValidateAutoPatchReport sanitize, snap, and syntax-check AI output', async () => {
+  const fenced = '```json\n{"bugs": [{"id": "1"}], "ok": true}\n```';
+  const parsed = parseGeminiJsonSafely<{ ok: boolean; bugs: unknown[] }>(fenced);
+  assert.equal(parsed?.ok, true);
+  assert.equal(parsed?.bugs.length, 1);
+
+  const proseWrapped = 'Here is the report:\n[{"line": 1}]\nDone.';
+  const parsedArr = parseGeminiJsonSafely<Array<{ line: number }>>(proseWrapped);
+  assert.equal(parsedArr?.[0]?.line, 1);
+  assert.equal(parseGeminiJsonSafely('not json at all'), null);
+
+  const sourceCode = [
+    'export function totalPrice(items: { price: number }[]): number {',
+    '  let sum = 0;',
+    '  for (let i = 0; i <= items.length; i++) {',
+    '    sum += items[i].price;',
+    '  }',
+    '  return sum;',
+    '}',
+  ].join('\n');
+
+  const reconciled = await reconcileAndValidateAutoPatchReport(
+    {
+      detected_language: 'typescript',
+      execution_source: 'gemini',
+      model: 'gemini-4-hydrogen',
+      trace_logs: ['1. Scanned'],
+      summary: { health_score: 40, overview: 'Off-by-one', prioritized_actions: ['Fix loop'] },
+      bugs: [
+        {
+          id: 'bug-valid',
+          title: 'Off-by-one loop bound',
+          severity: 'Critical',
+          confidence: 99,
+          errored_statement: '3: for (let i = 0; i <= items.length; i++) {',
+          root_cause: 'Loop reads past end of array',
+          // De-indented & line-numbered — reconciler should snap to exact verbatim source substring
+          before_code: '3: for (let i = 0; i <= items.length; i++) {',
+          after_code: 'for (let i = 0; i < items.length; i++) {',
+          test_cases: [{ input: '[]', expected_output: '0', status: 'fail', case_type: 'boundary' }],
+        },
+        {
+          id: 'bug-broken-syntax',
+          title: 'Broken syntax patch',
+          severity: 'High',
+          confidence: 80,
+          errored_statement: 'return sum;',
+          root_cause: 'Should be rejected for invalid TS syntax',
+          before_code: '  return sum;',
+          after_code: '  return (((sum;',
+          test_cases: [],
+        },
+        {
+          id: 'bug-noop',
+          title: 'No-op patch',
+          severity: 'Low',
+          confidence: 50,
+          errored_statement: 'let sum = 0;',
+          root_cause: 'Changes nothing',
+          before_code: '  let sum = 0;',
+          after_code: '  let sum = 0;',
+          test_cases: [],
+        },
+      ],
+    },
+    { sourceCode, filename: 'cart.ts', language: 'typescript' }
+  );
+
+  assert.equal(reconciled.bugs.length, 1);
+  assert.equal(reconciled.bugs[0].id, 'bug-valid');
+  assert.equal(reconciled.bugs[0].before_code, '  for (let i = 0; i <= items.length; i++) {');
+  assert.equal(reconciled.bugs[0].after_code, '  for (let i = 0; i < items.length; i++) {');
+  assert.equal(sourceCode.includes(reconciled.bugs[0].before_code), true);
+});
+
+test('POST /api/autopatch accepts error-statement-only input and rejects only when both source and error are empty', async () => {
+  const prevKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  const { baseUrl, close } = await startTestHttpServer();
+  try {
+    const emptyBoth = await fetch(`${baseUrl}/api/autopatch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceCode: '', errorStatement: '   ' }),
+    });
+    assert.equal(emptyBoth.status, 400);
+
+    const errOnly = await fetch(`${baseUrl}/api/autopatch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceCode: '',
+        errorStatement: 'ZeroDivisionError: division by zero in average()',
+      }),
+    });
+    // Validation passes and reaches Gemini handler (503 missing key in isolated test env)
+    assert.equal(errOnly.status, 503);
+  } finally {
+    if (prevKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = prevKey;
+    await close();
+  }
+});
+
 
