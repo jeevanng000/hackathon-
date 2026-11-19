@@ -1,0 +1,6 @@
+{
+  "name": "AutoPatch",
+  "description": "Autonomous Python bug detection, root-cause tracing, AST patch generation, and sandboxed test validation workbench built for developer trust.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
