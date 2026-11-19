@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -1433,8 +1434,10 @@ async function startServer() {
   });
 
   const app = createAutoPatchApp();
+  const server = http.createServer(app);
   const isProd = process.env.NODE_ENV === 'production';
   const distDir = path.resolve(__dirname, 'dist');
+  let viteServer: { close: () => Promise<void> } | null = null;
 
   if (isProd && fs.existsSync(distDir)) {
     app.use(express.static(distDir));
@@ -1443,16 +1446,18 @@ async function startServer() {
     });
   } else {
     const { createServer: createViteServer } = await import('vite');
-    const enableLocalHmr =
-      process.env.ENABLE_LOCAL_HMR === 'true' && process.env.DISABLE_HMR !== 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true, hmr: enableLocalHmr },
+      server: {
+        middlewareMode: true,
+        ws: { server },
+      },
       appType: 'spa',
     });
+    viteServer = vite;
     app.use(vite.middlewares);
   }
 
-  const server = app.listen(PORT, '0.0.0.0', () => {
+  server.listen(PORT, '0.0.0.0', () => {
     logStructured('info', 'server.started', {
       port: PORT,
       env: process.env.NODE_ENV || 'development',
@@ -1462,6 +1467,7 @@ async function startServer() {
 
   const shutdown = async (sig: string) => {
     logStructured('info', 'server.shutting_down', { signal: sig });
+    await viteServer?.close().catch(() => {});
     await closeNeo4jDriver().catch(() => {});
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 2500).unref();
