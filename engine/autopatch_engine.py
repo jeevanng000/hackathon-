@@ -11,10 +11,12 @@ Zero external dependencies — uses Python 3 standard library only.
 import ast
 import copy
 import difflib
+import hashlib
 import json
 import math
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -931,6 +933,46 @@ def sanitize_filename(name: str, fallback: str) -> str:
     return cleaned
 
 
+def _cleanup_sandbox_dir(tmpdir: str) -> None:
+    """
+    Robustly removes an ephemeral sandbox directory even if untrusted code
+    tightened permissions (e.g., chmod 0o000/0o500) or a killed PID-namespace
+    child took a few milliseconds for the kernel to release handles.
+    """
+    if not tmpdir or not os.path.exists(tmpdir):
+        return
+
+    def _force_writable(func: Any, target_path: str, _exc_info: Any) -> None:
+        try:
+            os.chmod(target_path, 0o700)
+        except Exception:
+            pass
+        try:
+            parent = os.path.dirname(target_path)
+            if parent and os.path.exists(parent):
+                os.chmod(parent, 0o700)
+        except Exception:
+            pass
+        try:
+            func(target_path)
+        except Exception:
+            pass
+
+    for attempt in range(4):
+        try:
+            try:
+                os.chmod(tmpdir, 0o700)
+            except Exception:
+                pass
+            shutil.rmtree(tmpdir, onerror=_force_writable)
+            if not os.path.exists(tmpdir):
+                return
+        except Exception:
+            pass
+        if attempt < 3:
+            time.sleep(0.05 * (attempt + 1))
+
+
 def run_sandbox_tests(
     source_code: str,
     test_code: str,
@@ -973,7 +1015,23 @@ def run_sandbox_tests(
     nofile = _env_int("SANDBOX_MAX_OPEN_FILES", 64, 32, 256)
     nproc = _env_int("SANDBOX_MAX_PROCESSES", 32, 8, 128)
 
-    with tempfile.TemporaryDirectory(prefix="autopatch_sandbox_") as tmpdir:
+    tmpdir = tempfile.mkdtemp(prefix="autopatch_sandbox_")
+    proc: Optional[subprocess.Popen[bytes]] = None
+    t_out: Optional[threading.Thread] = None
+    t_err: Optional[threading.Thread] = None
+
+    def kill_tree() -> None:
+        if proc is None:
+            return
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    try:
         os.chmod(tmpdir, 0o755)
         src_path = os.path.join(tmpdir, safe_src)
         test_path = os.path.join(tmpdir, safe_test)
@@ -1033,15 +1091,6 @@ def run_sandbox_tests(
         stdout_buf = bytearray()
         stderr_buf = bytearray()
         truncated_flag = {"hit": False}
-
-        def kill_tree() -> None:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
 
         def drain_stream(stream: Any, bucket: bytearray) -> None:
             try:
@@ -1177,6 +1226,18 @@ def run_sandbox_tests(
             "executionKind": "dynamic-sandbox",
             "tests": [],
         }
+    finally:
+        if proc is not None and proc.poll() is None:
+            kill_tree()
+            try:
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
+        if t_out is not None and t_out.is_alive():
+            t_out.join(timeout=0.3)
+        if t_err is not None and t_err.is_alive():
+            t_err.join(timeout=0.3)
+        _cleanup_sandbox_dir(tmpdir)
 
 
 def compute_sbfl_spectrum(source_code: str, baseline: Dict[str, Any]) -> Dict[str, Any]:
@@ -2316,6 +2377,43 @@ def synthesize_python_validation_tests(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def compute_canonical_verification_status(
+    trust_verdict: str,
+    verification_mode: str,
+    ast_report: Dict[str, Any],
+    sandbox: Dict[str, Any],
+) -> str:
+    """
+    Canonical verification status aligned with TypeScript backend.
+    NEVER reports static-only analysis as RUNTIME_VERIFIED.
+    """
+    if verification_mode == "execution-unavailable":
+        return "VERIFICATION_UNAVAILABLE"
+    if (
+        verification_mode == "dynamic-sandbox"
+        and trust_verdict in ("verified", "already_passing")
+        and sandbox.get("total", 0) > 0
+        and sandbox.get("failed", 0) == 0
+        and not sandbox.get("timedOut")
+        and not sandbox.get("importError")
+    ):
+        return "RUNTIME_VERIFIED"
+    if (
+        verification_mode == "static-only"
+        and ast_report.get("syntaxValid")
+        and trust_verdict != "blocked"
+    ):
+        return "STATIC_ANALYSIS_PASSED"
+    if (
+        trust_verdict == "blocked"
+        or sandbox.get("timedOut")
+        or sandbox.get("importError")
+        or not ast_report.get("syntaxValid")
+    ):
+        return "FAILED"
+    return "HUMAN_REVIEW_REQUIRED"
+
+
 def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
     filename = sanitize_filename(req.get("filename", "module.py"), "module.py")
     test_filename = sanitize_filename(req.get("testFilename", f"test_{filename}"), f"test_{filename}")
@@ -2324,6 +2422,7 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
     bug_context = (req.get("bugContext") or "").strip()
     timeout_sec = max(0.5, min(5.0, float(req.get("timeoutSeconds", 2.0))))
     sandbox_isolation = get_python_sandbox_isolation_info()
+    original_source_hash = hashlib.sha256(source_code.encode("utf-8")).hexdigest()
 
     # Stage 1: Genuine Python AST + CFG + Taint + Call Graph + Complexity
     ast_report = detect_and_parse(source_code, filename)
@@ -2379,6 +2478,9 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
         verification_mode = "static-only"
 
     trust_verdict = evaluate_trust_verdict(baseline, sandbox, patch_info, ast_report, verification_mode)
+    verification_status = compute_canonical_verification_status(
+        trust_verdict, verification_mode, ast_report, sandbox
+    )
     confidence = compute_confidence(ast_report, baseline, patch_info, sandbox, diff_data, sbfl, verification_mode)
     eli10 = build_eli10_explanation(
         patch_info.get("bugType", "Defect"),
@@ -2402,6 +2504,7 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
         "filename": filename,
         "testFilename": test_filename,
         "originalCode": source_code,
+        "originalSourceHash": original_source_hash,
         "patchedCode": patched_code,
         "eli10": eli10,
         "astReport": ast_report,
@@ -2412,12 +2515,13 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
         "diff": diff_data,
         "confidence": confidence,
         "trustVerdict": trust_verdict,
+        "verificationStatus": verification_status,
         "verificationMode": verification_mode,
         "analysisKind": "ast-parser",
         "testSynthesisStatus": test_synthesis_status,
         "sandboxIsolation": sandbox_isolation,
         "remainingUncertainty": uncertainty,
-        "auditStorageMode": "client-local-only",
+        "auditStorageMode": "backend-append-only",
     }
     if generated_test_code:
         result["generatedTestCode"] = generated_test_code
@@ -2432,6 +2536,7 @@ def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:
     test_code = (req.get("testCode") or "").strip()
     timeout_sec = max(0.5, min(5.0, float(req.get("timeoutSeconds", 2.0))))
     sandbox_isolation = get_python_sandbox_isolation_info()
+    original_source_hash = hashlib.sha256(original_code.encode("utf-8")).hexdigest()
 
     ast_report = detect_and_parse(candidate_code, filename)
     orig_ast = detect_and_parse(original_code, filename)
@@ -2481,6 +2586,9 @@ def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     trust_verdict = evaluate_trust_verdict(baseline, sandbox, patch_info, ast_report, verification_mode)
+    verification_status = compute_canonical_verification_status(
+        trust_verdict, verification_mode, ast_report, sandbox
+    )
     confidence = compute_confidence(
         {"syntaxValid": ast_report["syntaxValid"], "findings": [{"kind": "ManualReview"}] if ast_report["syntaxValid"] else []},
         baseline,
@@ -2506,6 +2614,7 @@ def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:
         "filename": filename,
         "testFilename": test_filename,
         "originalCode": original_code,
+        "originalSourceHash": original_source_hash,
         "patchedCode": candidate_code,
         "eli10": eli10,
         "astReport": ast_report,
@@ -2516,12 +2625,13 @@ def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:
         "diff": diff_data,
         "confidence": confidence,
         "trustVerdict": trust_verdict,
+        "verificationStatus": verification_status,
         "verificationMode": verification_mode,
         "analysisKind": "ast-parser",
         "testSynthesisStatus": test_synthesis_status,
         "sandboxIsolation": sandbox_isolation,
         "remainingUncertainty": uncertainty,
-        "auditStorageMode": "client-local-only",
+        "auditStorageMode": "backend-append-only",
     }
 
 

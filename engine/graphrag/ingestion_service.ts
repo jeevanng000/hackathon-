@@ -341,22 +341,65 @@ async function upsertFileGraphStructure(projectId: string, file: ExtractedFileDa
 }
 
 /**
- * Links genuine cross-file & intra-file Function->CALLS->Function, Function->USES->Class,
- * Test->TESTS->Function, and Finding->RELATED_TO->Finding relationships using real extracted symbols.
+ * Links genuine cross-file & intra-file Function->CALLS->Function, Class->HAS_METHOD->Function,
+ * Function->USES->Class, Test->TESTS->Function, and Finding->RELATED_TO->Finding relationships
+ * using real AST-extracted symbols and module imports (never blindly linking ambiguous names
+ * across unrelated files).
  */
 async function linkProjectRelationships(projectId: string): Promise<void> {
-  // (Function)-[:CALLS]->(Function) — only when actual callee symbol exists in the project
+  // 1. (Class)-[:HAS_METHOD]->(Function) verified by real AST source file & line containment
+  await runWriteQuery(
+    `MATCH (c:Class {projectId: $projectId})-[r:HAS_METHOD]->()
+     DELETE r`,
+    { projectId }
+  );
+  await runWriteQuery(
+    `MATCH (c:Class {projectId: $projectId}), (fn:Function {projectId: $projectId})
+     WHERE fn.filePath = c.filePath
+       AND c.startLine IS NOT NULL AND c.endLine IS NOT NULL
+       AND fn.startLine >= c.startLine AND fn.endLine <= c.endLine
+     MERGE (c)-[:HAS_METHOD]->(fn)`,
+    { projectId }
+  );
+
+  // 2. (Function)-[:CALLS]->(Function):
+  //    a) Same-file calls (unambiguous lexical scope)
+  //    b) Cross-file calls verified by File-[:IMPORTS]->Dependency matching callee file stem,
+  //       OR globally unique exported function symbol in the project (no ambiguous name collision)
   await runWriteQuery(
     `MATCH (caller:Function {projectId: $projectId})
      WHERE caller.calledNames IS NOT NULL AND size(caller.calledNames) > 0
      UNWIND caller.calledNames AS calleeName
      MATCH (callee:Function {projectId: $projectId, name: calleeName})
-     WHERE callee.id <> caller.id
+     WHERE callee.id <> caller.id AND callee.filePath = caller.filePath
      MERGE (caller)-[:CALLS]->(callee)`,
     { projectId }
   );
 
-  // (Function)-[:USES]->(Class)
+  await runWriteQuery(
+    `MATCH (callee:Function {projectId: $projectId})
+     WHERE callee.isExported = true
+     WITH callee.name AS fnName, collect(callee) AS candidates
+     WITH fnName, candidates, size(candidates) AS candidateCount
+     MATCH (callerFile:File {projectId: $projectId})-[:DEFINES]->(caller:Function {projectId: $projectId})
+     WHERE caller.calledNames IS NOT NULL AND fnName IN caller.calledNames
+     OPTIONAL MATCH (callerFile)-[:IMPORTS]->(dep:Dependency {projectId: $projectId})
+     WITH caller, candidates, candidateCount, collect(DISTINCT dep.name) AS imports
+     UNWIND candidates AS callee
+     WITH caller, callee, candidateCount, imports
+     WHERE callee.id <> caller.id
+       AND callee.filePath <> caller.filePath
+       AND (
+         ANY(imp IN imports WHERE
+           imp STARTS WITH '.' AND callee.filePath CONTAINS replace(replace(replace(imp, './', ''), '../', ''), '.ts', '')
+         )
+         OR candidateCount = 1
+       )
+     MERGE (caller)-[:CALLS]->(callee)`,
+    { projectId }
+  );
+
+  // 3. (Function)-[:USES]->(Class)
   await runWriteQuery(
     `MATCH (fn:Function {projectId: $projectId})
      WHERE fn.usedClasses IS NOT NULL AND size(fn.usedClasses) > 0
@@ -366,17 +409,27 @@ async function linkProjectRelationships(projectId: string): Promise<void> {
     { projectId }
   );
 
-  // (Test)-[:TESTS]->(Function)
+  // 4. (Test)-[:TESTS]->(Function): same-file OR test file imports callee module OR unique exported symbol
+  await runWriteQuery(
+    `MATCH (t:Test {projectId: $projectId})-[r:TESTS]->()
+     DELETE r`,
+    { projectId }
+  );
   await runWriteQuery(
     `MATCH (t:Test {projectId: $projectId})
      WHERE t.calledSymbols IS NOT NULL AND size(t.calledSymbols) > 0
+     OPTIONAL MATCH (tf:File {projectId: $projectId, path: t.filePath})-[:IMPORTS]->(dep:Dependency {projectId: $projectId})
+     WITH t, collect(DISTINCT dep.name) AS imports
      UNWIND t.calledSymbols AS sym
      MATCH (fn:Function {projectId: $projectId, name: sym})
+     WHERE fn.filePath = t.filePath
+        OR fn.isExported = true
+        OR ANY(imp IN imports WHERE imp STARTS WITH '.' AND fn.filePath CONTAINS replace(replace(replace(imp, './', ''), '../', ''), '.ts', ''))
      MERGE (t)-[:TESTS]->(fn)`,
     { projectId }
   );
 
-  // (Finding)-[:RELATED_TO]->(Finding) when same kind/category in same project
+  // 5. (Finding)-[:RELATED_TO]->(Finding) when same kind/category in same project
   await runWriteQuery(
     `MATCH (f1:Finding {projectId: $projectId}), (f2:Finding {projectId: $projectId})
      WHERE f1.id < f2.id AND f1.kind = f2.kind
@@ -386,8 +439,64 @@ async function linkProjectRelationships(projectId: string): Promise<void> {
 }
 
 /**
+ * Removes stale File/Function/Class/Test nodes & structural edges for source files
+ * that were deleted from disk, while strictly preserving historical Finding, Vulnerability,
+ * Patch, and Incident records.
+ */
+async function pruneDeletedProjectFiles(projectId: string, activeRelPaths: string[]): Promise<number> {
+  const staleRes = await runReadQuery(
+    `MATCH (f:File {projectId: $projectId})
+     WHERE NOT f.path IN $activeRelPaths
+     RETURN f.id AS id, f.path AS path`,
+    { projectId, activeRelPaths }
+  );
+  if (staleRes.records.length === 0) return 0;
+
+  for (const rec of staleRes.records) {
+    const fileId = String(rec.get('id'));
+    const filePath = String(rec.get('path'));
+
+    // Remove structural functions of deleted file unless referenced by historical Findings/Vulnerabilities
+    await runWriteQuery(
+      `MATCH (f:File {id: $fileId})-[r:DEFINES]->(fn:Function)
+       OPTIONAL MATCH (fn)-[sr:CALLS|USES|HAS_METHOD]-()
+       DELETE sr, r
+       WITH fn
+       WHERE NOT (fn)<-[:AFFECTS]-(:Finding) AND NOT (fn)<-[:AFFECTS]-(:Vulnerability)
+       DETACH DELETE fn`,
+      { fileId }
+    );
+
+    // Remove structural classes of deleted file
+    await runWriteQuery(
+      `MATCH (f:File {id: $fileId})-[r:CONTAINS]->(c:Class)
+       DETACH DELETE c`,
+      { fileId }
+    );
+
+    // Remove tests from deleted file unless referenced by a historical Patch verification edge
+    await runWriteQuery(
+      `MATCH (t:Test {projectId: $projectId, filePath: $filePath})
+       WHERE NOT (:Patch)-[:VERIFIED_BY]->(t)
+       DETACH DELETE t`,
+      { projectId, filePath }
+    );
+
+    // Detach and delete the stale File node itself (removing CONTAINS & IMPORTS edges)
+    await runWriteQuery(
+      `MATCH (f:File {id: $fileId})
+       DETACH DELETE f`,
+      { fileId }
+    );
+  }
+
+  return staleRes.records.length;
+}
+
+/**
  * Generates and stores Gemini embeddings (`gemini-embedding-001` by default) for nodes
  * missing embeddings or whose embedding model/dimension differs from current config.
+ * Prioritizes high-signal security/historical entities before bulk Function nodes.
  */
 async function populateEmbeddingsForProject(projectId: string): Promise<{
   generated: number;
@@ -398,7 +507,7 @@ async function populateEmbeddingsForProject(projectId: string): Promise<{
   error?: string;
 }> {
   const cfg = loadAppEnvConfig().gemini;
-  const targetLabels = ['Function', 'Finding', 'Vulnerability', 'Patch', 'Test', 'Incident'] as const;
+  const targetLabels = ['Vulnerability', 'Finding', 'Patch', 'Incident', 'Test', 'Function'] as const;
 
   interface NodeToEmbed {
     label: string;
@@ -605,6 +714,12 @@ export async function ingestRepositoryToGraph(params: {
         report.filesFailed++;
         warnings.push(`Failed to ingest ${relPath}: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
       }
+    }
+
+    // 4b. Prune File/Function/Class/Test records for source files deleted from disk
+    const prunedCount = await pruneDeletedProjectFiles(projectId, relFiles);
+    if (prunedCount > 0) {
+      anyFileChanged = true;
     }
 
     // 5. Link real cross-file relationships

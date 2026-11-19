@@ -30,8 +30,8 @@ export interface Neo4jConfig {
   username: string | null;
   password: string | null;
   database: string;
+  /** Derived automatically from NEO4J_URI when pointing at Neo4j AuraDB (*.databases.neo4j.io). Never requires a separate env var. */
   instanceId: string | null;
-  instanceName: string | null;
   maxTraversalDepth: number;
   maxNodes: number;
   embeddingBatchSize: number;
@@ -48,10 +48,26 @@ export interface AppEnvConfig {
   neo4j: Neo4jConfig;
 }
 
+export interface MissingCredentialEntry {
+  variable: string;
+  service: string;
+  purpose: string;
+  source: string;
+}
+
+export interface OptionalDisabledService {
+  service: string;
+  reason: string;
+  variables: string[];
+  source: string;
+}
+
 export interface StartupValidationReport {
   ok: boolean;
   warnings: string[];
   errors: string[];
+  missingRequired: MissingCredentialEntry[];
+  optionalDisabled: OptionalDisabledService[];
   secretsStatus: {
     geminiApiKey: 'configured' | 'missing';
     neo4jPassword: 'configured' | 'missing';
@@ -96,6 +112,16 @@ function readBool(name: string, fallback: boolean): boolean {
   return fallback;
 }
 
+/**
+ * Extracts the AuraDB instance ID directly from NEO4J_URI (e.g. neo4j+s://<id>.databases.neo4j.io)
+ * so the application never requires a separate AURA_INSTANCEID environment variable.
+ */
+export function extractAuraInstanceIdFromUri(uri: string | null): string | null {
+  if (!uri) return null;
+  const match = uri.match(/^[a-z0-9+]+:\/\/([a-z0-9-]+)\.databases\.neo4j\.io(?::\d+)?\/?$/i);
+  return match ? match[1] : null;
+}
+
 export function loadAppEnvConfig(): AppEnvConfig {
   const geminiApiKey = readOptionalSecret('GEMINI_API_KEY');
   const neo4jUri = readOptionalSecret('NEO4J_URI');
@@ -119,8 +145,8 @@ export function loadAppEnvConfig(): AppEnvConfig {
       transcribeModel: readString('GEMINI_TRANSCRIBE_MODEL', 'gemini-3.5-transcribe'),
       embeddingModel: readString('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001'),
       embeddingDimensions: readInt('GEMINI_EMBEDDING_DIMENSIONS', 768, 128, 3072),
-      timeoutMs: readInt('GEMINI_TIMEOUT_MS', 8000, 1500, 30000),
-      transcribeTimeoutMs: readInt('GEMINI_TRANSCRIBE_TIMEOUT_MS', 10000, 2000, 30000),
+      timeoutMs: readInt('GEMINI_TIMEOUT_MS', 15000, 1500, 45000),
+      transcribeTimeoutMs: readInt('GEMINI_TRANSCRIBE_TIMEOUT_MS', 15000, 2000, 45000),
       dailyQuota: readInt('GEMINI_DAILY_QUOTA', 500, 10, 100000),
     },
     neo4j: {
@@ -130,8 +156,7 @@ export function loadAppEnvConfig(): AppEnvConfig {
       username: neo4jUsername,
       password: neo4jPassword,
       database: neo4jDatabase,
-      instanceId: readOptionalSecret('AURA_INSTANCEID'),
-      instanceName: readOptionalSecret('AURA_INSTANCENAME'),
+      instanceId: extractAuraInstanceIdFromUri(neo4jUri),
       maxTraversalDepth: readInt('GRAPHRAG_MAX_TRAVERSAL_DEPTH', 2, 1, 3),
       maxNodes: readInt('GRAPHRAG_MAX_NODES', 50, 5, 200),
       embeddingBatchSize: readInt('GRAPHRAG_EMBEDDING_BATCH_SIZE', 16, 1, 64),
@@ -143,17 +168,81 @@ export function validateStartupConfig(): StartupValidationReport {
   const cfg = loadAppEnvConfig();
   const warnings: string[] = [];
   const errors: string[] = [];
+  const missingRequired: MissingCredentialEntry[] = [];
+  const optionalDisabled: OptionalDisabledService[] = [];
 
   if (!cfg.gemini.configured) {
     warnings.push(
-      'GEMINI_API_KEY is not set. Deterministic static/sandbox analysis remains fully operational; AI bug scanning, voice transcription, embeddings, and GraphRAG synthesis will degrade gracefully.'
+      'GEMINI_API_KEY is not set. Deterministic static/sandbox analysis remains fully operational; AI bug scanning, voice transcription, embeddings, and GraphRAG synthesis are disabled.'
     );
+    optionalDisabled.push({
+      service: 'Gemini AI (Bug Scan, AutoPatch AI, Voice Transcription, Embeddings)',
+      reason: 'GEMINI_API_KEY is not configured; deterministic engine remains active.',
+      variables: ['GEMINI_API_KEY'],
+      source: 'Google AI Studio Secrets (auto-provided in AI Studio) or https://aistudio.google.com/apikey',
+    });
   }
 
-  if (cfg.neo4j.enabled && !cfg.neo4j.configured) {
-    warnings.push(
-      'GRAPHRAG_ENABLED is true, but one or more Neo4j credentials (NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD) are missing. Core AutoPatch will start normally with GraphRAG degraded.'
-    );
+  const anyNeo4jPresent = Boolean(cfg.neo4j.uri || cfg.neo4j.username || cfg.neo4j.password);
+  const explicitGraphRagEnabled =
+    process.env.GRAPHRAG_ENABLED !== undefined && cfg.neo4j.enabled;
+
+  if (!cfg.neo4j.configured) {
+    if (explicitGraphRagEnabled || anyNeo4jPresent) {
+      const missingNeo4jVars: Array<{ variable: string; purpose: string }> = [];
+      if (!cfg.neo4j.uri) {
+        missingNeo4jVars.push({
+          variable: 'NEO4J_URI',
+          purpose: 'Bolt/Neo4j TLS connection URI for Neo4j AuraDB (e.g. neo4j+s://<instance>.databases.neo4j.io)',
+        });
+      }
+      if (!cfg.neo4j.username) {
+        missingNeo4jVars.push({
+          variable: 'NEO4J_USERNAME',
+          purpose: 'Neo4j AuraDB database username for basic authentication',
+        });
+      }
+      if (!cfg.neo4j.password) {
+        missingNeo4jVars.push({
+          variable: 'NEO4J_PASSWORD',
+          purpose: 'Neo4j AuraDB database password for basic authentication',
+        });
+      }
+      for (const item of missingNeo4jVars) {
+        missingRequired.push({
+          variable: item.variable,
+          service: 'Neo4j AuraDB GraphRAG',
+          purpose: item.purpose,
+          source: 'Neo4j Aura Console (https://console.neo4j.io) -> Instance Connection Details',
+        });
+      }
+      warnings.push(
+        `Neo4j GraphRAG is enabled or partially configured, but missing: ${missingNeo4jVars.map((m) => m.variable).join(', ')}. Core AutoPatch starts normally with GraphRAG degraded.`
+      );
+    } else {
+      optionalDisabled.push({
+        service: 'Neo4j AuraDB GraphRAG',
+        reason: 'Optional integration disabled because NEO4J_URI, NEO4J_USERNAME, and NEO4J_PASSWORD are not set.',
+        variables: ['NEO4J_URI', 'NEO4J_USERNAME', 'NEO4J_PASSWORD'],
+        source: 'Neo4j Aura Console (https://console.neo4j.io) -> Instance Connection Details',
+      });
+    }
+  } else if (!cfg.neo4j.enabled) {
+    optionalDisabled.push({
+      service: 'Neo4j AuraDB GraphRAG',
+      reason: 'Explicitly disabled via GRAPHRAG_ENABLED=false.',
+      variables: ['GRAPHRAG_ENABLED'],
+      source: 'Runtime configuration',
+    });
+  }
+
+  if (!cfg.apiKeyAuthToken) {
+    optionalDisabled.push({
+      service: 'API Key Authentication Middleware',
+      reason: 'Optional self-managed bearer token (AUTOPATCH_API_KEY) is unset; API endpoints operate in local/dev mode.',
+      variables: ['AUTOPATCH_API_KEY'],
+      source: 'Optional self-generated secret (no external dashboard required)',
+    });
   }
 
   if (cfg.neo4j.uri && !/^(neo4j|neo4j\+s|neo4j\+ssc|bolt|bolt\+s|bolt\+ssc):\/\//i.test(cfg.neo4j.uri)) {
@@ -164,6 +253,8 @@ export function validateStartupConfig(): StartupValidationReport {
     ok: errors.length === 0,
     warnings,
     errors,
+    missingRequired,
+    optionalDisabled,
     secretsStatus: {
       geminiApiKey: cfg.gemini.configured ? 'configured' : 'missing',
       neo4jPassword: cfg.neo4j.password ? 'configured' : 'missing',
@@ -192,6 +283,7 @@ export function redactSecrets(input: string): string {
     }
   }
   out = out.replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED_API_KEY]');
+  out = out.replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [REDACTED]');
   out = out.replace(/(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*['"]?[^\s'",;]+/gi, '$1=[REDACTED]');
   return out;
 }

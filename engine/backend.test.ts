@@ -42,13 +42,22 @@ async function startTestHttpServer(): Promise<{
   baseUrl: string;
   close: () => Promise<void>;
 }> {
-  const app = createAutoPatchApp();
+  const tmpAuditDir = await fs.mkdtemp(path.join(os.tmpdir(), 'autopatch_backend_audit_'));
+  const app = createAutoPatchApp({
+    auditLogPath: path.join(tmpAuditDir, 'audit.ndjson'),
+    enableGraphWriteBack: false,
+  });
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   return {
     baseUrl: `http://127.0.0.1:${port}`,
-    close: () => new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))),
+    close: async () => {
+      await new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve())));
+      const { closeNeo4jDriver } = await import('./graphrag/neo4j_client.ts');
+      await closeNeo4jDriver().catch(() => {});
+      await fs.rm(tmpAuditDir, { recursive: true, force: true });
+    },
   };
 }
 
@@ -335,23 +344,32 @@ print(json.dumps({
 });
 
 test('Python sandbox cleans up temp directories and terminates infinite loops cleanly', async () => {
-  const beforeEntries = (await fs.readdir(os.tmpdir())).filter((n) =>
-    n.startsWith('autopatch_sandbox_')
-  );
-  const res = runPythonEngineSync({
-    action: 'analyze',
-    filename: 'hang.py',
-    testFilename: 'test_hang.py',
-    sourceCode: `def hang():\n    while True:\n        pass\n`,
-    testCode: `from hang import hang\ndef test_hang():\n    hang()\n`,
-    timeoutSeconds: 0.7,
-  });
-  const afterEntries = (await fs.readdir(os.tmpdir())).filter((n) =>
-    n.startsWith('autopatch_sandbox_')
-  );
-  assert.equal(res.baseline.timedOut, true);
-  assert.equal(res.trustVerdict, 'blocked');
-  assert.equal(afterEntries.length, beforeEntries.length, 'No leaked autopatch_sandbox_ temp dirs');
+  const isolatedTmp = await fs.mkdtemp(path.join(os.tmpdir(), 'autopatch_cleanup_check_'));
+  await fs.chmod(isolatedTmp, 0o777);
+  try {
+    const res = runPythonEngineSync(
+      {
+        action: 'analyze',
+        filename: 'hang.py',
+        testFilename: 'test_hang.py',
+        sourceCode: `import os\ndef hang():\n    os.makedirs("locked_dir", exist_ok=True)\n    with open("locked_dir/data.txt", "w") as f:\n        f.write("x")\n    os.chmod("locked_dir", 0o500)\n    while True:\n        pass\n`,
+        testCode: `from hang import hang\ndef test_hang():\n    hang()\n`,
+        timeoutSeconds: 0.7,
+      },
+      { TMPDIR: isolatedTmp }
+    );
+    const leakedEntries = (await fs.readdir(isolatedTmp)).filter((n) =>
+      n.startsWith('autopatch_sandbox_')
+    );
+    assert.equal(res.baseline.timedOut, true);
+    assert.equal(res.trustVerdict, 'blocked');
+    assert.equal(res.verificationStatus, 'FAILED');
+    assert.equal(typeof res.originalSourceHash, 'string');
+    assert.equal(res.originalSourceHash?.length, 64);
+    assert.equal(leakedEntries.length, 0, 'No leaked autopatch_sandbox_ temp dirs');
+  } finally {
+    await fs.rm(isolatedTmp, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -470,7 +488,8 @@ test('HTTP API enforces health, input validation, path traversal, 400/413, forge
     assert.ok(healthRes.headers.get('x-request-id'));
     const health = (await healthRes.json()) as Record<string, unknown>;
     assert.equal(health.ok, true);
-    assert.equal(health.auditStorageMode, 'client-local-only');
+    assert.equal(health.auditStorageMode, 'backend-append-only');
+    assert.equal(typeof health.geminiConfigured, 'boolean');
     assert.ok(Array.isArray((health.languages as { executableSandbox: string[] }).executableSandbox));
 
     // Path traversal rejected (400)

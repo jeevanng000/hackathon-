@@ -10,7 +10,6 @@ export interface Neo4jHealthStatus {
   configured: boolean;
   connected: boolean;
   database: string;
-  instanceName: string | null;
   instanceId: string | null;
   schemaInitialized: boolean;
   latencyMs?: number;
@@ -152,7 +151,6 @@ export async function verifyNeo4jConnection(): Promise<Neo4jHealthStatus> {
     configured: cfg.configured,
     connected: false,
     database: cfg.database,
-    instanceName: cfg.instanceName,
     instanceId: cfg.instanceId,
     schemaInitialized,
   };
@@ -161,9 +159,14 @@ export async function verifyNeo4jConnection(): Promise<Neo4jHealthStatus> {
     return { ...base, error: 'GRAPHRAG_ENABLED is false.' };
   }
   if (!cfg.configured) {
+    const missing = [
+      !cfg.uri ? 'NEO4J_URI' : null,
+      !cfg.username ? 'NEO4J_USERNAME' : null,
+      !cfg.password ? 'NEO4J_PASSWORD' : null,
+    ].filter(Boolean);
     return {
       ...base,
-      error: 'Neo4j credentials (NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD) are not configured.',
+      error: `Neo4j credentials missing (${missing.join(', ')}). GraphRAG is disabled.`,
     };
   }
 
