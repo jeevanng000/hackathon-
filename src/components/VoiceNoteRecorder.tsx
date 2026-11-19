@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   Mic,
   Square,
@@ -9,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import type { VoiceNote } from '../types/autopatch';
+import { PANEL_TRANSITION } from '../utils/motionPresets';
 
 interface VoiceNoteRecorderProps {
   findingId: string;
@@ -278,14 +280,12 @@ export function VoiceNoteRecorder({
   };
 
   return (
-    <div className="pt-2 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+    <div className="pt-3 border-t border-white/10 space-y-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-200">
-          <Volume2 className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" aria-hidden="true" />
-          <span>
-            Developer Voice Notes ({notes.length})
-          </span>
-          <span className="font-normal text-slate-500 dark:text-slate-400 hidden sm:inline">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-[#F4F7FF]">
+          <Volume2 className="w-3.5 h-3.5 text-[#50D7E6]" aria-hidden="true" />
+          <span>Developer Voice Notes ({notes.length})</span>
+          <span className="font-normal text-[#A6B0C8] hidden sm:inline">
             · Document why you edited or kept this code
           </span>
         </div>
@@ -294,24 +294,24 @@ export function VoiceNoteRecorder({
           <button
             type="button"
             onClick={handleStartRecording}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#F4F7FF] bg-white/8 hover:bg-white/14 border border-white/15 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            <Mic className="w-3.5 h-3.5 text-[#DC2626] dark:text-rose-400" aria-hidden="true" />
+            <Mic className="w-3.5 h-3.5 text-[#FF718B]" aria-hidden="true" />
             <span>Record Voice Note</span>
           </button>
         ) : (
           <div className="flex items-center gap-2">
             {/* Live mic level meter + elapsed timer */}
-            <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 rounded-md">
-              <span className="font-mono text-xs font-semibold tabular-nums text-[#B91C1C] dark:text-rose-300">
+            <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-[#FF718B]/15 border border-[#FF718B]/35 rounded-lg">
+              <span className="font-mono text-xs font-semibold tabular-nums text-[#FF718B]">
                 REC {formatDuration(elapsedSec)}
               </span>
               <div
                 aria-hidden="true"
-                className="w-16 h-1.5 bg-rose-200 dark:bg-rose-900 rounded-full overflow-hidden"
+                className="w-16 h-1.5 bg-white/10 rounded-full overflow-hidden"
               >
                 <div
-                  className="h-full bg-[#DC2626] dark:bg-rose-400 transition-[width] duration-75"
+                  className="h-full bg-[#FF718B] transition-[width] duration-75"
                   style={{ width: `${Math.max(8, micLevel)}%` }}
                 />
               </div>
@@ -320,7 +320,7 @@ export function VoiceNoteRecorder({
             <button
               type="button"
               onClick={handleStopRecording}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-[#DC2626] hover:bg-[#B91C1C] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-[#FF718B] hover:bg-[#ff5876] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Square className="w-3 h-3 fill-current" aria-hidden="true" />
               <span>Stop &amp; Save</span>
@@ -329,7 +329,7 @@ export function VoiceNoteRecorder({
               type="button"
               onClick={handleCancelRecording}
               aria-label="Cancel voice recording"
-              className="inline-flex items-center justify-center w-7 h-7 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 rounded hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              className="inline-flex items-center justify-center w-8 h-8 text-[#A6B0C8] hover:text-[#F4F7FF] rounded-lg hover:bg-white/10 cursor-pointer"
             >
               <X className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
@@ -340,93 +340,105 @@ export function VoiceNoteRecorder({
       {micError && (
         <div
           role="alert"
-          className="flex items-start gap-2 px-3 py-2 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900 rounded text-xs text-[#991B1B] dark:text-rose-200"
+          className="flex items-start gap-2 px-3 py-2 bg-[#FF718B]/12 border border-[#FF718B]/35 rounded-lg text-xs text-[#FF718B]"
         >
           <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
           <span>{micError}</span>
         </div>
       )}
 
-      {notes.length > 0 && (
-        <ul className="space-y-2">
-          {notes.map((note) => (
-            <li
-              key={note.id}
-              className="p-2.5 bg-slate-50 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-700 rounded-md space-y-2"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-[11px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">
-                  <span>{formatDuration(note.durationSec)}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>
-                    {new Date(note.createdAt).toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </span>
-                  {note.transcriptionStatus === 'transcribing' && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span className="inline-flex items-center gap-1 font-sans text-[#2563EB] dark:text-blue-400">
-                        <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
-                        <span>Transcribing...</span>
-                      </span>
-                    </>
-                  )}
+      <AnimatePresence initial={false}>
+        {notes.length > 0 && (
+          <motion.ul
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4 }}
+            transition={PANEL_TRANSITION}
+            className="space-y-2"
+          >
+            {notes.map((note) => (
+              <motion.li
+                key={note.id}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={PANEL_TRANSITION}
+                className="p-2.5 bg-[#0B1020]/70 border border-white/10 rounded-lg space-y-2"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-[11px] font-mono text-[#A6B0C8] tabular-nums">
+                    <span>{formatDuration(note.durationSec)}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>
+                      {new Date(note.createdAt).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                    {note.transcriptionStatus === 'transcribing' && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="inline-flex items-center gap-1 font-sans text-[#50D7E6]">
+                          <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+                          <span>Transcribing...</span>
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => onDeleteNote(note.id)}
+                    aria-label="Delete voice note"
+                    className="inline-flex items-center gap-1 text-[11px] text-[#A6B0C8] hover:text-[#FF718B] cursor-pointer"
+                  >
+                    <Trash2 className="w-3 h-3" aria-hidden="true" />
+                    <span>Delete</span>
+                  </button>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => onDeleteNote(note.id)}
-                  aria-label="Delete voice note"
-                  className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 hover:text-[#B91C1C] dark:hover:text-rose-400 cursor-pointer"
-                >
-                  <Trash2 className="w-3 h-3" aria-hidden="true" />
-                  <span>Delete</span>
-                </button>
-              </div>
-
-              <audio
-                controls
-                preload="metadata"
-                src={note.audioDataUrl}
-                className="w-full h-8"
-              />
-
-              <div className="space-y-1">
-                <label
-                  htmlFor={`note-transcript-${note.id}`}
-                  className="block text-[11px] font-medium text-slate-500 dark:text-slate-400"
-                >
-                  Reasoning Note / Transcript
-                </label>
-                <textarea
-                  id={`note-transcript-${note.id}`}
-                  value={note.transcript}
-                  onChange={(e) =>
-                    onUpdateNote(note.id, {
-                      transcript: e.target.value,
-                      transcriptionStatus:
-                        note.transcriptionStatus === 'transcribing'
-                          ? 'manual'
-                          : note.transcriptionStatus,
-                    })
-                  }
-                  rows={2}
-                  placeholder={
-                    note.transcriptionStatus === 'transcribing'
-                      ? 'Transcribing audio...'
-                      : note.transcriptionError
-                      ? `${note.transcriptionError} Type your reasoning note here if needed.`
-                      : 'Add or edit reasoning notes for this bug...'
-                  }
-                  className="w-full px-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded focus:outline-none focus:border-[#2563EB] dark:focus:border-blue-400 resize-y"
+                <audio
+                  controls
+                  preload="metadata"
+                  src={note.audioDataUrl}
+                  className="w-full h-8"
                 />
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+
+                <div className="space-y-1">
+                  <label
+                    htmlFor={`note-transcript-${note.id}`}
+                    className="block text-[11px] font-medium text-[#A6B0C8]"
+                  >
+                    Reasoning Note / Transcript
+                  </label>
+                  <textarea
+                    id={`note-transcript-${note.id}`}
+                    value={note.transcript}
+                    onChange={(e) =>
+                      onUpdateNote(note.id, {
+                        transcript: e.target.value,
+                        transcriptionStatus:
+                          note.transcriptionStatus === 'transcribing'
+                            ? 'manual'
+                            : note.transcriptionStatus,
+                      })
+                    }
+                    rows={2}
+                    placeholder={
+                      note.transcriptionStatus === 'transcribing'
+                        ? 'Transcribing audio...'
+                        : note.transcriptionError
+                        ? `${note.transcriptionError} Type your reasoning note here if needed.`
+                        : 'Add or edit reasoning notes for this bug...'
+                    }
+                    className="w-full px-2.5 py-1.5 text-xs text-[#F4F7FF] placeholder:text-[#A6B0C8]/70 bg-[#070B16]/85 border border-white/12 rounded-md focus:outline-none focus:border-[#8B7CFF] resize-y"
+                  />
+                </div>
+              </motion.li>
+            ))}
+          </motion.ul>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

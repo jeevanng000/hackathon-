@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
+import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { DEMO_CASES } from './data/demoCases';
 import type {
   AnalysisResponse,
   AppView,
   AuditDecision,
   AuditEntry,
+  DashboardTab,
   DemoCase,
   ExplanationMode,
   UnifiedBugFinding,
@@ -20,15 +22,16 @@ import {
   applyFindingFixToSource,
   buildUnifiedFindings,
 } from './utils/unifiedFindings';
+import { VIEW_TRANSITION } from './utils/motionPresets';
+import { AuroraBackdrop } from './components/AuroraBackdrop';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { WorkbenchView } from './components/WorkbenchView';
 import type { CodeStageMode } from './components/BugCodeStage';
-import { DiffReviewView } from './components/DiffReviewView';
+import { ProjectsView } from './components/ProjectsView';
 import { AuditLedgerView } from './components/AuditLedgerView';
 
 const AUDIT_STORAGE_KEY = 'autopatch.auditLedger.v1';
-const THEME_STORAGE_KEY = 'autopatch.theme.v1';
 const VOICE_NOTES_STORAGE_KEY = 'autopatch.voiceNotes.v1';
 
 function loadStoredAuditEntries(): AuditEntry[] {
@@ -53,21 +56,11 @@ function loadStoredVoiceNotes(): VoiceNote[] {
   }
 }
 
-function loadStoredTheme(): 'light' | 'dark' {
-  try {
-    const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (saved === 'dark' || saved === 'light') return saved;
-  } catch {
-    // Ignore storage read errors
-  }
-  return 'light';
-}
-
 export default function App() {
   const initialDemo = DEMO_CASES[0];
 
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => loadStoredTheme());
-  const [activeView, setActiveView] = useState<AppView>('workbench');
+  const [activeView, setActiveView] = useState<AppView>('dashboard');
+  const [dashboardTab, setDashboardTab] = useState<DashboardTab>('inspector');
   const [activeDemoId, setActiveDemoId] = useState<string | null>(initialDemo.id);
   const [selectedLanguage, setSelectedLanguage] = useState<'auto' | SupportedLanguage>('auto');
   const [filename, setFilename] = useState(initialDemo.filename);
@@ -106,15 +99,6 @@ export default function App() {
       : selectedLanguage;
 
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', theme === 'dark');
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-    } catch {
-      // Ignore storage quota errors
-    }
-  }, [theme]);
-
-  useEffect(() => {
     try {
       window.localStorage.setItem(AUDIT_STORAGE_KEY, JSON.stringify(auditEntries));
     } catch {
@@ -129,10 +113,6 @@ export default function App() {
       // Ignore storage quota errors
     }
   }, [voiceNotes]);
-
-  const handleToggleTheme = () => {
-    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
-  };
 
   const handleAddVoiceNote = (note: VoiceNote) => {
     setVoiceNotes((prev) => [note, ...prev]);
@@ -158,9 +138,10 @@ export default function App() {
     setActiveDecision(null);
     setErrorMessage(null);
     setStageMode(nextStageMode);
+    setDashboardTab('inspector');
   };
 
-  const handleSelectDemo = (demo: DemoCase) => {
+  const handleSelectDemo = (demo: DemoCase = DEMO_CASES[0]) => {
     setActiveDemoId(demo.id);
     setSelectedLanguage('auto');
     setFilename(demo.filename);
@@ -170,7 +151,7 @@ export default function App() {
     setBugContext(demo.bugContext ?? '');
     setCaseDescription(demo.description);
     resetInspectionState('inspect');
-    setActiveView('workbench');
+    setActiveView('dashboard');
   };
 
   const handleStartBlank = () => {
@@ -183,7 +164,7 @@ export default function App() {
     setBugContext('');
     setCaseDescription('Paste or drop any program file, then click Scan & Find Bugs.');
     resetInspectionState('edit');
-    setActiveView('workbench');
+    setActiveView('dashboard');
   };
 
   const handleResetDemo = () => {
@@ -203,7 +184,7 @@ export default function App() {
     setBugContext('');
     setCaseDescription(`Custom uploaded source file (${uploadedName}).`);
     resetInspectionState('inspect');
-    setActiveView('workbench');
+    setActiveView('dashboard');
   };
 
   const handleUploadTest = (uploadedName: string, content: string) => {
@@ -225,13 +206,15 @@ export default function App() {
     setErrorMessage(null);
     if (!sourceCode.trim()) {
       setErrorMessage('Paste or upload a program before running a bug scan.');
-      setActiveView('workbench');
+      setActiveView('dashboard');
+      setDashboardTab('inspector');
       setStageMode('edit');
       return;
     }
 
     setIsRunning(true);
     setActiveDecision(null);
+    setActiveView('dashboard');
 
     try {
       const res = await fetch('/api/analyze', {
@@ -261,6 +244,7 @@ export default function App() {
       setUndoStack([]);
       setHasLocalEdits(false);
       setStageMode('inspect');
+      setDashboardTab('inspector');
       setActiveFindingId(findings[0]?.id ?? null);
 
       if (!testCode.trim() && typed.generatedTestCode) {
@@ -276,14 +260,11 @@ export default function App() {
         });
         setAuditEntries((prev) => [blockedRecord, ...prev]);
       }
-
-      // Stay on Inspector view so the user sees color-coded lines + popup immediately
-      setActiveView('workbench');
     } catch (err) {
       setErrorMessage(
         err instanceof Error ? err.message : 'Unable to reach AutoPatch analysis engine.'
       );
-      setActiveView('workbench');
+      setActiveView('dashboard');
     } finally {
       setIsRunning(false);
     }
@@ -309,7 +290,6 @@ export default function App() {
       return next;
     });
 
-    // Keep subsequent line anchors accurate when lines are added or removed
     setUnifiedFindings((prev) =>
       prev.map((item) => {
         if (item.id === finding.id) {
@@ -480,156 +460,181 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#F8FAFC] dark:bg-[#0B1120] text-[#0F172A] dark:text-slate-100">
-      <TopBar
-        activeView={activeView}
-        onSelectView={setActiveView}
-        onRunAnalysis={handleRunAnalysis}
-        isRunning={isRunning}
-        hasAnalysis={analysis !== null}
-        auditCount={auditEntries.length}
-        onToggleMobileMenu={() => setMobileMenuOpen((prev) => !prev)}
-      />
+    <MotionConfig reducedMotion="user">
+      <div className="relative min-h-screen flex flex-col text-[#F4F7FF]">
+        <AuroraBackdrop />
 
-      <div className="flex flex-1 min-h-0">
-        <Sidebar
-          demoCases={DEMO_CASES}
-          activeDemoId={activeDemoId}
-          onSelectDemo={handleSelectDemo}
-          onStartBlank={handleStartBlank}
-          onUploadSource={handleUploadSource}
-          onUploadTest={handleUploadTest}
-          analysis={analysis}
+        <TopBar
+          activeView={activeView}
+          onSelectView={setActiveView}
+          onRunAnalysis={handleRunAnalysis}
           isRunning={isRunning}
-          decisionRecorded={activeDecision !== null}
-          mobileOpen={mobileMenuOpen}
-          onCloseMobile={() => setMobileMenuOpen(false)}
-          findings={unifiedFindings}
-          activeFindingId={activeFindingId}
-          resolvedFindingIds={resolvedFindingIds}
-          onSelectFinding={(id) => {
-            setActiveFindingId(id);
-            setStageMode('inspect');
-            setActiveView('workbench');
-          }}
+          auditCount={auditEntries.length}
+          onToggleMobileMenu={() => setMobileMenuOpen((prev) => !prev)}
         />
 
-        <main className="flex-1 min-w-0 overflow-y-auto">
-          <nav
-            aria-label="Mobile workspace views"
-            className="md:hidden bg-white dark:bg-[#111827] border-b border-slate-200 dark:border-slate-800 px-4 py-2 flex items-center gap-2 overflow-x-auto"
-          >
-            {(
-              [
-                { id: 'workbench', label: 'Inspector' },
-                { id: 'review', label: 'Diff & Review' },
-                {
-                  id: 'audit',
-                  label: `Audit Ledger${auditEntries.length > 0 ? ` (${auditEntries.length})` : ''}`,
-                },
-              ] as Array<{ id: AppView; label: string }>
-            ).map((item) => {
-              const isActive = activeView === item.id;
-              const isDisabled = item.id === 'review' && analysis === null;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setActiveView(item.id)}
-                  disabled={isDisabled}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
-                    isActive
-                      ? 'bg-slate-900 dark:bg-blue-600 text-white'
-                      : isDisabled
-                      ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                      : 'text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
-                  }`}
+        <div className="flex flex-1 min-h-0">
+          <Sidebar
+            demoCases={DEMO_CASES}
+            activeDemoId={activeDemoId}
+            onSelectDemo={handleSelectDemo}
+            onStartBlank={handleStartBlank}
+            onUploadSource={handleUploadSource}
+            onUploadTest={handleUploadTest}
+            analysis={analysis}
+            isRunning={isRunning}
+            decisionRecorded={activeDecision !== null}
+            mobileOpen={mobileMenuOpen}
+            onCloseMobile={() => setMobileMenuOpen(false)}
+            findings={unifiedFindings}
+            activeFindingId={activeFindingId}
+            resolvedFindingIds={resolvedFindingIds}
+            onSelectFinding={(id) => {
+              setActiveFindingId(id);
+              setStageMode('inspect');
+              setDashboardTab('inspector');
+              setActiveView('dashboard');
+            }}
+          />
+
+          <main className="flex-1 min-w-0 overflow-y-auto">
+            {/* Mobile view switcher */}
+            <nav
+              aria-label="Mobile workspace views"
+              className="md:hidden bg-[#0E1529]/80 backdrop-blur-md border-b border-white/10 px-4 py-2 flex items-center gap-2 overflow-x-auto"
+            >
+              {(
+                [
+                  { id: 'dashboard', label: 'Dashboard' },
+                  { id: 'projects', label: 'Projects' },
+                  {
+                    id: 'history',
+                    label: `History${auditEntries.length > 0 ? ` (${auditEntries.length})` : ''}`,
+                  },
+                ] as Array<{ id: AppView; label: string }>
+              ).map((item) => {
+                const isActive = activeView === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setActiveView(item.id)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                      isActive
+                        ? 'bg-[#8B7CFF] text-white'
+                        : 'text-[#A6B0C8] bg-white/5 hover:text-[#F4F7FF]'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </nav>
+
+            <AnimatePresence mode="wait" initial={false}>
+              {activeView === 'dashboard' && (
+                <motion.div
+                  key="dashboard"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={VIEW_TRANSITION}
                 >
-                  {item.label}
-                </button>
-              );
-            })}
-          </nav>
+                  <WorkbenchView
+                    filename={filename}
+                    testFilename={testFilename}
+                    sourceCode={sourceCode}
+                    testCode={testCode}
+                    bugContext={bugContext}
+                    caseDescription={caseDescription}
+                    selectedLanguage={selectedLanguage}
+                    resolvedLanguage={resolvedLanguage}
+                    onChangeLanguage={setSelectedLanguage}
+                    onChangeFilename={setFilename}
+                    onChangeTestFilename={setTestFilename}
+                    onChangeSourceCode={handleEditSourceDirectly}
+                    onChangeTestCode={setTestCode}
+                    onChangeBugContext={setBugContext}
+                    onUploadSource={handleUploadSource}
+                    onResetDemo={handleResetDemo}
+                    canResetDemo={activeDemoId !== null}
+                    analysis={analysis}
+                    unifiedFindings={unifiedFindings}
+                    activeFindingId={activeFindingId}
+                    onSelectFinding={setActiveFindingId}
+                    resolvedFindingIds={resolvedFindingIds}
+                    onApplyFix={handleApplyFix}
+                    onApplyAllSafeFixes={handleApplyAllSafeFixes}
+                    onUndoFix={handleUndoFix}
+                    canUndoFix={undoStack.length > 0}
+                    hasLocalEdits={hasLocalEdits}
+                    onVerifyCurrentCode={handleVerifyCurrentCode}
+                    isValidating={isValidatingManual}
+                    isRunning={isRunning}
+                    errorMessage={errorMessage}
+                    dashboardTab={dashboardTab}
+                    onChangeDashboardTab={setDashboardTab}
+                    onOpenProjects={() => setActiveView('projects')}
+                    explanationMode={explanationMode}
+                    onChangeExplanationMode={setExplanationMode}
+                    stageMode={stageMode}
+                    onChangeStageMode={setStageMode}
+                    voiceNotes={voiceNotes.filter((n) => n.filename === filename)}
+                    onAddVoiceNote={handleAddVoiceNote}
+                    onUpdateVoiceNote={handleUpdateVoiceNote}
+                    onDeleteVoiceNote={handleDeleteVoiceNote}
+                    activeDecision={activeDecision}
+                    auditCount={auditEntries.length}
+                    onRunAnalysis={handleRunAnalysis}
+                    onOpenAudit={() => setActiveView('history')}
+                    onAcceptPatch={handleAcceptPatch}
+                    onRejectPatch={handleRejectPatch}
+                    onDownloadPatched={handleDownloadPatched}
+                    onValidateManualPatch={handleValidateManualPatch}
+                  />
+                </motion.div>
+              )}
 
-          {activeView === 'workbench' && (
-            <WorkbenchView
-              filename={filename}
-              testFilename={testFilename}
-              sourceCode={sourceCode}
-              testCode={testCode}
-              bugContext={bugContext}
-              caseDescription={caseDescription}
-              selectedLanguage={selectedLanguage}
-              resolvedLanguage={resolvedLanguage}
-              onChangeLanguage={setSelectedLanguage}
-              onChangeFilename={setFilename}
-              onChangeTestFilename={setTestFilename}
-              onChangeSourceCode={handleEditSourceDirectly}
-              onChangeTestCode={setTestCode}
-              onChangeBugContext={setBugContext}
-              onUploadSource={handleUploadSource}
-              onResetDemo={handleResetDemo}
-              canResetDemo={activeDemoId !== null}
-              analysis={analysis}
-              unifiedFindings={unifiedFindings}
-              activeFindingId={activeFindingId}
-              onSelectFinding={setActiveFindingId}
-              resolvedFindingIds={resolvedFindingIds}
-              onApplyFix={handleApplyFix}
-              onApplyAllSafeFixes={handleApplyAllSafeFixes}
-              onUndoFix={handleUndoFix}
-              canUndoFix={undoStack.length > 0}
-              hasLocalEdits={hasLocalEdits}
-              onVerifyCurrentCode={handleVerifyCurrentCode}
-              isValidating={isValidatingManual}
-              isRunning={isRunning}
-              errorMessage={errorMessage}
-              onOpenReview={() => setActiveView('review')}
-              explanationMode={explanationMode}
-              onChangeExplanationMode={setExplanationMode}
-              stageMode={stageMode}
-              onChangeStageMode={setStageMode}
-              theme={theme}
-              onToggleTheme={handleToggleTheme}
-              voiceNotes={voiceNotes.filter((n) => n.filename === filename)}
-              onAddVoiceNote={handleAddVoiceNote}
-              onUpdateVoiceNote={handleUpdateVoiceNote}
-              onDeleteVoiceNote={handleDeleteVoiceNote}
-              activeDecision={activeDecision}
-              auditCount={auditEntries.length}
-              onRunAnalysis={handleRunAnalysis}
-              onOpenAudit={() => setActiveView('audit')}
-            />
-          )}
+              {activeView === 'projects' && (
+                <motion.div
+                  key="projects"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={VIEW_TRANSITION}
+                >
+                  <ProjectsView
+                    demoCases={DEMO_CASES}
+                    activeDemoId={activeDemoId}
+                    currentFilename={filename}
+                    onOpenDemoProject={handleSelectDemo}
+                    onStartBlank={handleStartBlank}
+                    onUploadSource={handleUploadSource}
+                    onUploadTest={handleUploadTest}
+                    onBackToDashboard={() => setActiveView('dashboard')}
+                  />
+                </motion.div>
+              )}
 
-          {activeView === 'review' && (
-            <DiffReviewView
-              analysis={analysis}
-              testCode={testCode}
-              activeDecision={activeDecision}
-              onAcceptPatch={handleAcceptPatch}
-              onRejectPatch={handleRejectPatch}
-              onDownloadPatched={handleDownloadPatched}
-              onValidateManualPatch={handleValidateManualPatch}
-              isValidatingManual={isValidatingManual}
-              onBackToWorkbench={() => setActiveView('workbench')}
-              voiceNotes={
-                analysis
-                  ? voiceNotes.filter((n) => n.filename === analysis.filename)
-                  : []
-              }
-            />
-          )}
-
-          {activeView === 'audit' && (
-            <AuditLedgerView
-              entries={auditEntries}
-              onClearEntries={() => setAuditEntries([])}
-              onGoToWorkbench={() => setActiveView('workbench')}
-            />
-          )}
-        </main>
+              {activeView === 'history' && (
+                <motion.div
+                  key="history"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={VIEW_TRANSITION}
+                >
+                  <AuditLedgerView
+                    entries={auditEntries}
+                    onClearEntries={() => setAuditEntries([])}
+                    onGoToWorkbench={() => setActiveView('dashboard')}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </main>
+        </div>
       </div>
-    </div>
+    </MotionConfig>
   );
 }

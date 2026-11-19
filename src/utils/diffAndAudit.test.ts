@@ -21,6 +21,10 @@ import {
   sortFindingsBySeverity,
 } from './unifiedFindings';
 import { deriveWorkflowLifecycleSteps } from './workflowStepper';
+import {
+  computeBugHeatmapBands,
+  computeScrollViewportMetrics,
+} from './bugHeatmap';
 import { DEMO_CASES } from '../data/demoCases';
 import type { AnalysisResponse, VoiceNote } from '../types/autopatch';
 import { runMultiLangAnalysis } from '../../engine/multi_lang_engine';
@@ -502,5 +506,84 @@ test('deriveWorkflowLifecycleSteps tracks Analysis -> Inspection -> Verification
     afterAudit.map((s) => s.state),
     ['completed', 'completed', 'completed', 'completed']
   );
+});
+
+test('Bug Heatmap computes severity density bands, resolved states, and scroll viewport metrics', () => {
+  const sampleFindings = [
+    {
+      id: 'f-crit',
+      line: 5,
+      endLine: 5,
+      source: 'static-ast' as const,
+      category: 'security' as const,
+      severity: 'critical' as const,
+      title: 'SQL injection',
+      kind: 'SqlInjectionRisk',
+      plainEnglishExplanation: 'Unsafe query',
+      technicalExplanation: 'Unsafe query',
+      impactSummary: 'Injection',
+      originalSnippet: 'q = ...',
+      suggestedReplacement: null,
+      canAutoFix: false,
+    },
+    {
+      id: 'f-warn',
+      line: 5,
+      endLine: 6,
+      source: 'static-ast' as const,
+      category: 'runtime' as const,
+      severity: 'warning' as const,
+      title: 'Null check',
+      kind: 'NullDereferenceRisk',
+      plainEnglishExplanation: 'Possible null',
+      technicalExplanation: 'Possible null',
+      impactSummary: 'Crash',
+      originalSnippet: 'x.y',
+      suggestedReplacement: null,
+      canAutoFix: false,
+    },
+    {
+      id: 'f-info',
+      line: 40,
+      endLine: 40,
+      source: 'ai-latest' as const,
+      category: 'modern' as const,
+      severity: 'info' as const,
+      title: 'Style hint',
+      kind: 'ModernPattern',
+      plainEnglishExplanation: 'Consider helper',
+      technicalExplanation: 'Consider helper',
+      impactSummary: 'Readability',
+      originalSnippet: 'pass',
+      suggestedReplacement: null,
+      canAutoFix: false,
+    },
+  ];
+
+  const bands = computeBugHeatmapBands({
+    lineCount: 48,
+    findings: sampleFindings,
+    resolvedFindingIds: new Set(['f-info']),
+    activeFindingId: 'f-crit',
+  });
+
+  assert.equal(bands.length, 3);
+  const line5Band = bands.find((b) => b.startLine === 5)!;
+  assert.equal(line5Band.status, 'critical');
+  assert.equal(line5Band.totalCount, 2);
+  assert.equal(line5Band.normalizedDensity, 1);
+  assert.equal(line5Band.hasActiveFinding, true);
+  assert.equal(line5Band.primaryFindingId, 'f-crit');
+
+  const line40Band = bands.find((b) => b.startLine === 40)!;
+  assert.equal(line40Band.status, 'resolved');
+
+  assert.deepEqual(computeScrollViewportMetrics(0, 500, 500), {
+    topPct: 0,
+    heightPct: 100,
+  });
+  const scrolled = computeScrollViewportMetrics(500, 500, 2000);
+  assert.equal(scrolled.topPct, 25);
+  assert.equal(scrolled.heightPct, 25);
 });
 

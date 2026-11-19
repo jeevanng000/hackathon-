@@ -239,4 +239,6 @@ export interface DemoCase {
   bugContext?: string;
 }
 
-export type AppView = 'workbench' | 'review' | 'audit';
+export type AppView = 'dashboard' | 'projects' | 'history';
+export type DashboardTab = 'inspector' | 'diff';
+

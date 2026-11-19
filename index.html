@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -9,13 +9,6 @@
     <meta property="og:description" content="Multi-language autonomous bug detection, root-cause tracing, AST/SBFL patch generation, and sandboxed validation workbench built for developer trust." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
-    <script>
-      try {
-        if (localStorage.getItem('autopatch.theme.v1') === 'dark') {
-          document.documentElement.classList.add('dark');
-        }
-      } catch (e) {}
-    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -23,7 +16,7 @@
       rel="stylesheet"
     />
   </head>
-  <body class="bg-[#F8FAFC] dark:bg-[#0B1120] text-[#0F172A] dark:text-slate-100 antialiased selection:bg-[#2563EB]/15 dark:selection:bg-[#3B82F6]/30 selection:text-[#1D4ED8] dark:selection:text-blue-200">
+  <body class="bg-[#0B1020] text-[#F4F7FF] antialiased selection:bg-[#8B7CFF]/30 selection:text-[#F4F7FF]">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

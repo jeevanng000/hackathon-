@@ -45,34 +45,31 @@ function getStepClasses(step: LifecycleStep): {
   switch (step.state) {
     case 'completed':
       return {
-        card: 'bg-emerald-50/55 dark:bg-emerald-950/20 border-emerald-200/90 dark:border-emerald-900/70 hover:bg-emerald-50 dark:hover:bg-emerald-950/35',
-        badge:
-          'bg-emerald-100 dark:bg-emerald-950/80 text-[#15803D] dark:text-emerald-300',
-        title: 'text-slate-950 dark:text-slate-50',
-        detail: 'text-[#15803D] dark:text-emerald-400',
+        card: 'bg-[#51D6A2]/8 border-[#51D6A2]/30 hover:bg-[#51D6A2]/14',
+        badge: 'bg-[#51D6A2]/20 text-[#51D6A2] border border-[#51D6A2]/30',
+        title: 'text-[#F4F7FF]',
+        detail: 'text-[#51D6A2]',
       };
     case 'active':
       return {
-        card: 'bg-blue-50/70 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950/45',
-        badge: 'bg-[#2563EB] dark:bg-blue-600 text-white',
-        title: 'text-slate-950 dark:text-slate-50',
-        detail: 'text-[#1D4ED8] dark:text-blue-300',
+        card: 'bg-[#8B7CFF]/14 border-[#8B7CFF]/45 hover:bg-[#8B7CFF]/20 shadow-sm shadow-[#8B7CFF]/15',
+        badge: 'bg-[#8B7CFF] text-white',
+        title: 'text-[#F4F7FF]',
+        detail: 'text-[#50D7E6]',
       };
     case 'attention':
       return {
-        card: 'bg-amber-50/70 dark:bg-amber-950/25 border-amber-300 dark:border-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/40',
-        badge:
-          'bg-amber-100 dark:bg-amber-950/80 text-[#B45309] dark:text-amber-300',
-        title: 'text-slate-950 dark:text-slate-50',
-        detail: 'text-[#B45309] dark:text-amber-300',
+        card: 'bg-[#FFCA70]/10 border-[#FFCA70]/40 hover:bg-[#FFCA70]/16',
+        badge: 'bg-[#FFCA70]/20 text-[#FFCA70] border border-[#FFCA70]/35',
+        title: 'text-[#F4F7FF]',
+        detail: 'text-[#FFCA70]',
       };
     default:
       return {
-        card: 'bg-slate-50/60 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800 hover:bg-slate-100/70 dark:hover:bg-slate-800/50',
-        badge:
-          'bg-slate-200/80 dark:bg-slate-800 text-slate-600 dark:text-slate-400',
-        title: 'text-slate-700 dark:text-slate-300',
-        detail: 'text-slate-500 dark:text-slate-400',
+        card: 'bg-white/[0.03] border-white/10 hover:bg-white/[0.06]',
+        badge: 'bg-white/10 text-[#A6B0C8]',
+        title: 'text-[#F4F7FF]/85',
+        detail: 'text-[#A6B0C8]',
       };
   }
 }
@@ -127,21 +124,21 @@ export function WorkflowStepper({
   return (
     <section
       aria-label="Bug lifecycle progress"
-      className="bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 rounded-lg p-4 space-y-3"
+      className="bg-[#111930]/70 backdrop-blur-md border border-white/10 rounded-xl p-4 space-y-3 shadow-lg shadow-black/20"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <h2 className="font-display font-semibold text-slate-900 dark:text-slate-100">
+          <h2 className="font-display font-semibold text-[#F4F7FF]">
             Bug Lifecycle Workflow
           </h2>
-          <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">
+          <span aria-hidden="true" className="text-white/25">
             ·
           </span>
-          <span className="text-slate-500 dark:text-slate-400">
+          <span className="text-[#A6B0C8]">
             Analysis &rarr; Inspection &rarr; Verification &rarr; Audit
           </span>
         </div>
-        <span className="font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
+        <span className="font-mono text-xs tabular-nums text-[#A6B0C8]">
           {completedCount}/4 stages complete
         </span>
       </div>
@@ -158,18 +155,18 @@ export function WorkflowStepper({
                 disabled={!step.enabled}
                 onClick={() => handleStageClick(step.id)}
                 aria-current={step.state === 'active' ? 'step' : undefined}
-                className={`w-full text-left px-3 py-2.5 rounded-md border transition-colors flex flex-col justify-between gap-1.5 ${
+                className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all flex flex-col justify-between gap-1.5 ${
                   cls.card
                 } ${
                   step.enabled
-                    ? 'cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#2563EB]'
-                    : 'opacity-65 cursor-not-allowed'
+                    ? 'cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8B7CFF]'
+                    : 'opacity-50 cursor-not-allowed'
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <span
-                      className={`inline-flex items-center justify-center w-6 h-6 rounded font-mono text-[11px] font-semibold tabular-nums shrink-0 ${cls.badge}`}
+                      className={`inline-flex items-center justify-center w-6 h-6 rounded-md font-mono text-[11px] font-semibold tabular-nums shrink-0 ${cls.badge}`}
                     >
                       {step.state === 'completed' ? (
                         <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
@@ -188,12 +185,12 @@ export function WorkflowStepper({
 
                   <div className="flex items-center gap-1 shrink-0">
                     <StageIcon
-                      className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500"
+                      className="w-3.5 h-3.5 text-[#A6B0C8]"
                       aria-hidden="true"
                     />
                     {idx < steps.length - 1 && (
                       <ChevronRight
-                        className="hidden lg:block w-3.5 h-3.5 text-slate-300 dark:text-slate-600"
+                        className="hidden lg:block w-3.5 h-3.5 text-white/25"
                         aria-hidden="true"
                       />
                     )}
@@ -201,7 +198,7 @@ export function WorkflowStepper({
                 </div>
 
                 <div className="space-y-0.5 pl-8">
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  <p className="text-[11px] text-[#A6B0C8] truncate">
                     {step.description}
                   </p>
                   <p className={`text-[11px] font-medium truncate ${cls.detail}`}>

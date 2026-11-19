@@ -71,18 +71,18 @@ export function AuditLedgerView({
   return (
     <div className="max-w-[1200px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800">
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-5 border-b border-white/10">
         <div className="space-y-1">
-          <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-            <span>Workspace</span>
+          <div className="flex items-center gap-2 text-xs text-[#A6B0C8]">
+            <span>History</span>
             <span aria-hidden="true">/</span>
-            <span className="text-slate-700 dark:text-slate-300">Trust &amp; Audit Ledger</span>
+            <span className="text-[#F4F7FF]">Change &amp; Audit Ledger</span>
           </div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight text-slate-950 dark:text-slate-50">
-            Patch Audit Trail
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-[#F4F7FF]">
+            Patch Change History &amp; Audit Trail
           </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400">
-            Every analyzed file, line target, sandbox verification result, confidence score, and human approval or override decision.
+          <p className="text-sm text-[#A6B0C8]">
+            Every analyzed file, line target, sandbox verification result, confidence score, and human approval or rejection decision.
           </p>
         </div>
 
@@ -91,54 +91,54 @@ export function AuditLedgerView({
             type="button"
             onClick={handleExportCsv}
             disabled={filtered.length === 0}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-45 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-[#F4F7FF] bg-[#111930]/75 backdrop-blur-md border border-white/12 hover:bg-white/10 disabled:opacity-40 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed"
           >
-            <Download className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" aria-hidden="true" />
+            <Download className="w-3.5 h-3.5 text-[#50D7E6]" aria-hidden="true" />
             <span>Export CSV</span>
           </button>
           <button
             type="button"
             onClick={handleExportJson}
             disabled={filtered.length === 0}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-45 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-[#F4F7FF] bg-[#111930]/75 backdrop-blur-md border border-white/12 hover:bg-white/10 disabled:opacity-40 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed"
           >
-            <Download className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" aria-hidden="true" />
+            <Download className="w-3.5 h-3.5 text-[#50D7E6]" aria-hidden="true" />
             <span>Export JSON</span>
           </button>
           {entries.length > 0 && (
             <button
               type="button"
               onClick={onClearEntries}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-[#B91C1C] dark:text-rose-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-rose-50 dark:hover:bg-rose-950/50 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-[#FF718B] bg-[#FF718B]/10 border border-[#FF718B]/30 hover:bg-[#FF718B]/20 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Clear Ledger</span>
+              <span>Clear History</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Flat Summary Metrics Strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 rounded-lg px-4 py-3 text-xs text-slate-600 dark:text-slate-400 font-mono tabular-nums">
+      {/* Summary Metrics Strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 bg-[#111930]/70 backdrop-blur-md border border-white/10 rounded-xl px-4 py-3.5 text-xs text-[#A6B0C8] font-mono tabular-nums shadow-lg shadow-black/20">
         <div>
-          <span className="text-slate-500 dark:text-slate-400">Total </span>
-          <strong className="text-slate-950 dark:text-slate-50">{entries.length}</strong>
+          <span>Total </span>
+          <strong className="text-[#F4F7FF]">{entries.length}</strong>
         </div>
         <div>
-          <span className="text-slate-500 dark:text-slate-400">Accepted </span>
-          <strong className="text-[#15803D] dark:text-emerald-400">{acceptedCount}</strong>
+          <span>Accepted </span>
+          <strong className="text-[#51D6A2]">{acceptedCount}</strong>
         </div>
         <div>
-          <span className="text-slate-500 dark:text-slate-400">Rejected </span>
-          <strong className="text-slate-900 dark:text-slate-200">{rejectedCount}</strong>
+          <span>Rejected </span>
+          <strong className="text-[#F4F7FF]">{rejectedCount}</strong>
         </div>
         <div>
-          <span className="text-slate-500 dark:text-slate-400">Overrides </span>
-          <strong className="text-[#B45309] dark:text-amber-400">{overrideCount}</strong>
+          <span>Overrides </span>
+          <strong className="text-[#FFCA70]">{overrideCount}</strong>
         </div>
         <div>
-          <span className="text-slate-500 dark:text-slate-400">Blocked </span>
-          <strong className="text-[#B91C1C] dark:text-rose-400">{blockedCount}</strong>
+          <span>Blocked </span>
+          <strong className="text-[#FF718B]">{blockedCount}</strong>
         </div>
       </div>
 
@@ -146,7 +146,7 @@ export function AuditLedgerView({
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div className="relative flex-1 max-w-md">
           <Search
-            className="w-4 h-4 text-slate-400 dark:text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+            className="w-4 h-4 text-[#A6B0C8] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
             aria-hidden="true"
           />
           <input
@@ -154,15 +154,15 @@ export function AuditLedgerView({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search by file, bug type, rule, or note..."
-            aria-label="Search audit ledger"
-            className="w-full pl-9 pr-3 py-2 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 rounded-md focus:outline-none focus:border-[#2563EB] dark:focus:border-blue-400 focus:ring-2 focus:ring-[#2563EB]/20"
+            aria-label="Search change history"
+            className="w-full pl-9 pr-3 py-2 text-xs text-[#F4F7FF] placeholder:text-[#A6B0C8]/65 bg-[#111930]/75 backdrop-blur-md border border-white/12 rounded-lg focus:outline-none focus:border-[#8B7CFF] focus:ring-2 focus:ring-[#8B7CFF]/25"
           />
         </div>
 
         <div
           role="group"
-          aria-label="Filter audit entries by decision"
-          className="inline-flex items-center gap-1 p-1 bg-slate-200/70 dark:bg-slate-800 rounded-md overflow-x-auto"
+          aria-label="Filter history entries by decision"
+          className="inline-flex items-center gap-1 p-1 bg-[#111930]/75 backdrop-blur-md border border-white/10 rounded-lg overflow-x-auto"
         >
           {filterOptions.map((opt) => (
             <button
@@ -170,10 +170,10 @@ export function AuditLedgerView({
               type="button"
               onClick={() => setFilter(opt.id)}
               aria-pressed={filter === opt.id}
-              className={`px-3 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 filter === opt.id
-                  ? 'bg-white dark:bg-slate-950 text-slate-950 dark:text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-950 dark:hover:text-slate-100'
+                  ? 'bg-[#8B7CFF] text-white shadow-sm'
+                  : 'text-[#A6B0C8] hover:text-[#F4F7FF]'
               }`}
             >
               {opt.label}
@@ -184,25 +184,25 @@ export function AuditLedgerView({
 
       {/* Populated Table or Empty State */}
       {entries.length === 0 ? (
-        <section className="bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 rounded-lg px-6 py-14 text-center space-y-3">
-          <h2 className="font-display text-base font-semibold text-slate-900 dark:text-slate-100">
-            No Audit Decisions Recorded Yet
+        <section className="bg-[#111930]/70 backdrop-blur-md border border-white/10 rounded-xl px-6 py-14 text-center space-y-3 shadow-lg shadow-black/20">
+          <h2 className="font-display text-base font-semibold text-[#F4F7FF]">
+            No Patch Decisions Recorded Yet
           </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-            Run an analysis on any source file and accept, reject, or override a patch to build an exportable trust ledger.
+          <p className="text-xs text-[#A6B0C8] max-w-md mx-auto">
+            Run a scan on any source file and accept, reject, or override a proposed fix to build an exportable change history.
           </p>
           <button
             type="button"
             onClick={onGoToWorkbench}
-            className="inline-flex items-center px-4 py-2 text-xs font-medium text-white bg-[#2563EB] hover:bg-[#1D4ED8] rounded-md transition-colors cursor-pointer"
+            className="inline-flex items-center px-4 py-2 text-xs font-medium text-white bg-[#8B7CFF] hover:bg-[#7A69FF] rounded-lg transition-colors cursor-pointer"
           >
-            Open Workbench
+            Open Dashboard
           </button>
         </section>
       ) : filtered.length === 0 ? (
-        <section className="bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 rounded-lg px-6 py-12 text-center space-y-2">
-          <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
-            No audit records match your current filter.
+        <section className="bg-[#111930]/70 backdrop-blur-md border border-white/10 rounded-xl px-6 py-12 text-center space-y-2 shadow-lg shadow-black/20">
+          <p className="text-sm font-medium text-[#F4F7FF]">
+            No history records match your current filter.
           </p>
           <button
             type="button"
@@ -210,17 +210,17 @@ export function AuditLedgerView({
               setFilter('all');
               setQuery('');
             }}
-            className="text-xs font-medium text-[#2563EB] dark:text-blue-400 hover:text-[#1D4ED8] dark:hover:text-blue-300 cursor-pointer"
+            className="text-xs font-medium text-[#50D7E6] hover:text-[#F4F7FF] cursor-pointer"
           >
             Reset search &amp; filters
           </button>
         </section>
       ) : (
-        <section className="bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+        <section className="bg-[#111930]/70 backdrop-blur-md border border-white/10 rounded-xl overflow-hidden shadow-xl shadow-black/25">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
-                <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/60 text-xs text-slate-500 dark:text-slate-400">
+                <tr className="border-b border-white/10 bg-[#0D1426]/85 text-xs text-[#A6B0C8]">
                   <th className="py-2.5 px-4 font-medium whitespace-nowrap">Timestamp</th>
                   <th className="py-2.5 px-4 font-medium whitespace-nowrap">File &amp; Line</th>
                   <th className="py-2.5 px-4 font-medium whitespace-nowrap">Bug Type</th>
@@ -234,69 +234,69 @@ export function AuditLedgerView({
                   <th className="py-2.5 px-4 font-medium">Patch Summary &amp; Notes</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
+              <tbody className="divide-y divide-white/[0.06] text-xs">
                 {filtered.map((entry) => (
                   <tr
                     key={entry.id}
-                    className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors"
+                    className="hover:bg-white/[0.03] transition-colors"
                   >
-                    <td className="py-3 px-4 font-mono tabular-nums text-slate-500 dark:text-slate-400 whitespace-nowrap align-top">
+                    <td className="py-3 px-4 font-mono tabular-nums text-[#A6B0C8] whitespace-nowrap align-top">
                       {formatAuditTimestamp(entry.timestamp)}
                     </td>
-                    <td className="py-3 px-4 font-mono text-slate-900 dark:text-slate-100 whitespace-nowrap align-top">
+                    <td className="py-3 px-4 font-mono text-[#F4F7FF] whitespace-nowrap align-top">
                       <span>{entry.filename}</span>
                       {entry.line != null && (
-                        <span className="text-slate-500 dark:text-slate-400 tabular-nums">
+                        <span className="text-[#50D7E6] tabular-nums">
                           :{entry.line}
                         </span>
                       )}
                     </td>
-                    <td className="py-3 px-4 font-mono text-slate-800 dark:text-slate-200 whitespace-nowrap align-top">
+                    <td className="py-3 px-4 font-mono text-[#F4F7FF]/90 whitespace-nowrap align-top">
                       {entry.bugType}
                     </td>
-                    <td className="py-3 px-4 font-mono tabular-nums text-right text-slate-900 dark:text-slate-100 whitespace-nowrap align-top">
+                    <td className="py-3 px-4 font-mono tabular-nums text-right text-[#F4F7FF] whitespace-nowrap align-top">
                       {entry.confidence}%
                     </td>
-                    <td className="py-3 px-4 font-mono tabular-nums text-right text-slate-700 dark:text-slate-300 whitespace-nowrap align-top">
+                    <td className="py-3 px-4 font-mono tabular-nums text-right text-[#A6B0C8] whitespace-nowrap align-top">
                       {entry.sandboxPassed}/{entry.sandboxTotal}
                     </td>
                     <td className="py-3 px-4 whitespace-nowrap align-top">
                       {entry.decision === 'accepted' && (
-                        <span className="inline-flex items-center gap-1 font-medium text-[#15803D] dark:text-emerald-400">
+                        <span className="inline-flex items-center gap-1 font-medium text-[#51D6A2]">
                           <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
                           <span>Accepted</span>
                         </span>
                       )}
                       {entry.decision === 'rejected' && (
-                        <span className="inline-flex items-center gap-1 font-medium text-slate-600 dark:text-slate-400">
+                        <span className="inline-flex items-center gap-1 font-medium text-[#A6B0C8]">
                           <XCircle className="w-3.5 h-3.5" aria-hidden="true" />
                           <span>Rejected</span>
                         </span>
                       )}
                       {entry.decision === 'override' && (
-                        <span className="inline-flex items-center gap-1 font-medium text-[#B45309] dark:text-amber-400">
+                        <span className="inline-flex items-center gap-1 font-medium text-[#FFCA70]">
                           <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
                           <span>Human Override</span>
                         </span>
                       )}
                       {entry.decision === 'blocked' && (
-                        <span className="inline-flex items-center gap-1 font-medium text-[#B91C1C] dark:text-rose-400">
+                        <span className="inline-flex items-center gap-1 font-medium text-[#FF718B]">
                           <ShieldAlert className="w-3.5 h-3.5" aria-hidden="true" />
                           <span>Blocked</span>
                         </span>
                       )}
                     </td>
-                    <td className="py-3 px-4 text-slate-700 dark:text-slate-300 align-top max-w-sm">
+                    <td className="py-3 px-4 text-[#F4F7FF]/85 align-top max-w-sm">
                       <p className="leading-relaxed">{entry.summary}</p>
                       {entry.overrideReason && (
-                        <p className="mt-1 text-[11px] text-[#92400E] dark:text-amber-300">
+                        <p className="mt-1 text-[11px] text-[#FFCA70]">
                           Override note: {entry.overrideReason}
                         </p>
                       )}
                       {entry.voiceNoteCount && entry.voiceNoteCount > 0 && (
-                        <p className="mt-1 flex items-start gap-1 text-[11px] text-slate-600 dark:text-slate-400">
+                        <p className="mt-1 flex items-start gap-1 text-[11px] text-[#A6B0C8]">
                           <Mic
-                            className="w-3 h-3 mt-0.5 text-[#DC2626] dark:text-rose-400 shrink-0"
+                            className="w-3 h-3 mt-0.5 text-[#FF718B] shrink-0"
                             aria-hidden="true"
                           />
                           <span>

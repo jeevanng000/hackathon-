@@ -1,12 +1,13 @@
 import { Menu, Radar, Loader2 } from 'lucide-react';
+import { motion } from 'motion/react';
 import type { AppView } from '../types/autopatch';
+import { VIEW_TRANSITION } from '../utils/motionPresets';
 
 interface TopBarProps {
   activeView: AppView;
   onSelectView: (view: AppView) => void;
   onRunAnalysis: () => void;
   isRunning: boolean;
-  hasAnalysis: boolean;
   auditCount: number;
   onToggleMobileMenu: () => void;
 }
@@ -16,70 +17,67 @@ export function TopBar({
   onSelectView,
   onRunAnalysis,
   isRunning,
-  hasAnalysis,
   auditCount,
   onToggleMobileMenu,
 }: TopBarProps) {
   const navItems: Array<{ id: AppView; label: string; count?: number }> = [
-    { id: 'workbench', label: 'Inspector' },
-    { id: 'review', label: 'Diff & Review' },
-    { id: 'audit', label: 'Audit Ledger', count: auditCount },
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'projects', label: 'Projects' },
+    { id: 'history', label: 'History', count: auditCount },
   ];
 
   return (
-    <header className="sticky top-0 z-30 h-14 bg-white dark:bg-[#111827] border-b border-slate-200 dark:border-slate-800 px-4 lg:px-6 flex items-center justify-between gap-4 lg:gap-8">
-      {/* Zone 1: Single-element brand wordmark (+ mobile menu trigger on < lg) */}
+    <header className="sticky top-0 z-30 h-15 bg-[#0B1020]/75 backdrop-blur-xl border-b border-white/10 px-4 lg:px-6 flex items-center justify-between gap-4 lg:gap-8">
+      {/* Zone 1: Brand wordmark + mobile menu trigger */}
       <div className="flex items-center gap-3 shrink-0">
         <button
           type="button"
           onClick={onToggleMobileMenu}
           aria-label="Toggle workspace navigation"
-          className="lg:hidden inline-flex items-center justify-center w-10 h-10 -ml-2 rounded-md text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+          className="lg:hidden inline-flex items-center justify-center w-10 h-10 -ml-2 rounded-lg text-[#A6B0C8] hover:text-[#F4F7FF] hover:bg-white/5 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8B7CFF]"
         >
           <Menu className="w-5 h-5" aria-hidden="true" />
         </button>
         <button
           type="button"
-          onClick={() => onSelectView('workbench')}
-          className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-slate-50 whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#2563EB] rounded-sm cursor-pointer"
+          onClick={() => onSelectView('dashboard')}
+          className="font-display text-lg font-bold tracking-tight text-[#F4F7FF] hover:text-[#50D7E6] transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#8B7CFF] rounded-sm cursor-pointer"
         >
           AutoPatch
         </button>
       </div>
 
-      {/* Zone 2: Concise single-line navigation links */}
-      <nav aria-label="Primary workspace views" className="hidden md:flex items-center gap-6 min-w-0">
+      {/* Zone 2: Single-line primary navigation (Dashboard | Projects | History) */}
+      <nav
+        aria-label="Primary workspace views"
+        className="hidden md:flex items-center gap-6 min-w-0"
+      >
         {navItems.map((item) => {
           const isActive = activeView === item.id;
-          const isDisabled = item.id === 'review' && !hasAnalysis;
           return (
             <button
               key={item.id}
               type="button"
               onClick={() => onSelectView(item.id)}
-              disabled={isDisabled}
               aria-current={isActive ? 'page' : undefined}
-              className={`relative py-4 px-1 text-sm font-medium whitespace-nowrap shrink-0 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2563EB] ${
+              className={`relative py-4.5 px-1 text-sm font-medium whitespace-nowrap shrink-0 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8B7CFF] cursor-pointer ${
                 isActive
-                  ? 'text-slate-950 dark:text-white'
-                  : isDisabled
-                  ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-950 dark:hover:text-slate-100 cursor-pointer'
+                  ? 'text-[#F4F7FF]'
+                  : 'text-[#A6B0C8] hover:text-[#F4F7FF]'
               }`}
             >
               <span>{item.label}</span>
               {typeof item.count === 'number' && item.count > 0 && (
-                <>
-                  {' '}
-                  <span className="ml-1 font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
-                    {item.count}
-                  </span>
-                </>
+                <span className="ml-1.5 font-mono text-xs tabular-nums text-[#50D7E6]">
+                  {item.count}
+                </span>
               )}
               {isActive && (
-                <span
+                <motion.span
+                  layoutId="nav-active-indicator"
+                  transition={VIEW_TRANSITION}
                   aria-hidden="true"
-                  className="absolute left-0 right-0 bottom-0 h-0.5 bg-[#2563EB] dark:bg-blue-400"
+                  className="absolute left-0 right-0 bottom-0 h-0.5 bg-gradient-to-r from-[#8B7CFF] to-[#50D7E6] rounded-full"
                 />
               )}
             </button>
@@ -87,13 +85,13 @@ export function TopBar({
         })}
       </nav>
 
-      {/* Zone 3: Single Primary Action */}
+      {/* Zone 3: Prominent Primary Scan Action */}
       <div className="flex items-center shrink-0">
         <button
           type="button"
           onClick={onRunAnalysis}
           disabled={isRunning}
-          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:bg-slate-400 dark:disabled:bg-slate-700 rounded-md transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2563EB] cursor-pointer disabled:cursor-wait"
+          className="inline-flex items-center gap-2 h-10 px-4 text-sm font-medium text-white bg-[#8B7CFF] hover:bg-[#7A69FF] active:scale-[0.98] disabled:bg-[#8B7CFF]/45 disabled:text-white/75 rounded-lg shadow-lg shadow-[#8B7CFF]/20 border border-white/15 transition-all whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#50D7E6] cursor-pointer disabled:cursor-wait"
         >
           {isRunning ? (
             <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
