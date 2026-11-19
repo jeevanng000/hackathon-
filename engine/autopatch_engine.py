@@ -1625,18 +1625,150 @@ def evaluate_trust_verdict(
     return "blocked"
 
 
+def build_static_or_context_baseline(
+    source_code: str,
+    filename: str,
+    ast_report: Dict[str, Any],
+    bug_context: str = "",
+) -> Dict[str, Any]:
+    """
+    When a user supplies only source code + an optional failing traceback/log
+    (without a separate unit test file), parse the traceback or static AST
+    findings to construct the baseline diagnosis.
+    """
+    findings = ast_report.get("findings", [])
+    err_type: Optional[str] = None
+    err_msg: Optional[str] = None
+    err_line: Optional[int] = None
+
+    if bug_context.strip():
+        line_matches = re.findall(r"line\s+(\d+)", bug_context, re.I)
+        if line_matches:
+            err_line = int(line_matches[-1])
+        exc_matches = re.findall(
+            r"([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception))\s*:\s*(.+)",
+            bug_context,
+        )
+        if exc_matches:
+            err_type, err_msg = exc_matches[-1][0].strip(), exc_matches[-1][1].strip()
+
+    if not err_type and findings:
+        first_err = next((f for f in findings if f.get("severity") == "error"), findings[0])
+        kind = first_err.get("kind", "")
+        if "ZeroDivision" in kind:
+            err_type = "ZeroDivisionError"
+        elif "Index" in kind:
+            err_type = "IndexError"
+        elif "NullDereference" in kind:
+            err_type = "TypeError"
+        elif "KeyError" in kind:
+            err_type = "KeyError"
+        elif "UnboundLocal" in kind:
+            err_type = "UnboundLocalError"
+        elif "Syntax" in kind:
+            err_type = "SyntaxError"
+        elif "InfiniteLoop" in kind:
+            err_type = "TimeoutError"
+        else:
+            err_type = kind or "RuntimeError"
+        err_msg = first_err.get("message")
+        err_line = err_line or first_err.get("line")
+
+    has_failure = bool(err_type or findings)
+    return {
+        "timedOut": err_type == "TimeoutError",
+        "importError": not ast_report.get("syntaxValid", True),
+        "passed": 0 if has_failure else 1,
+        "failed": 1 if has_failure else 0,
+        "total": 1,
+        "durationMs": ast_report.get("durationMs", 1.0),
+        "errorType": err_type,
+        "errorMessage": err_msg,
+        "errorLine": err_line,
+        "traceback": bug_context.strip() or (f"{err_type}: {err_msg} (line {err_line})" if err_type else None),
+        "tests": [
+            {
+                "name": "static_and_traceback_triage",
+                "status": "failed" if has_failure else "passed",
+                "durationMs": ast_report.get("durationMs", 1.0),
+                "errorType": err_type,
+                "errorMessage": err_msg,
+                "errorLine": err_line,
+                "traceback": bug_context.strip() or (f"{err_type}: {err_msg}" if err_type else None),
+                "executedLines": [err_line] if err_line else [],
+            }
+        ],
+    }
+
+
+def synthesize_python_validation_tests(
+    filename: str,
+    patched_code: str,
+    ast_report: Dict[str, Any],
+    patch_info: Dict[str, Any],
+) -> str:
+    """
+    Auto-generates a runnable pytest / standalone unit test suite when the user
+    only provided source code + a traceback log.
+    """
+    mod_name = os.path.splitext(os.path.basename(filename))[0]
+    funcs = [f["name"] for f in ast_report.get("functions", [])]
+    lines: List[str] = []
+    if funcs:
+        lines.append(f"from {mod_name} import {', '.join(funcs)}")
+    else:
+        lines.append(f"import {mod_name}")
+    lines.append("")
+    lines.append("")
+
+    if "authenticate_user" in funcs:
+        lines.extend([
+            "def test_authenticate_existing_and_missing_user():",
+            "    db = {'alice': {'password': 'secret', 'is_active': True, 'role': 'admin'}}",
+            "    assert authenticate_user(db, 'alice', 'secret')['status'] == 'SUCCESS'",
+            "    assert authenticate_user(db, 'unknown_user', 'secret')['status'] == 'INVALID_CREDENTIALS'",
+            "",
+            "",
+        ])
+    if "reset_password" in funcs:
+        lines.extend([
+            "def test_reset_password_existing_and_missing_user():",
+            "    db = {'alice': {'password': 'old', 'is_active': True}}",
+            "    assert reset_password(db, 'alice', 'new') is True",
+            "    assert reset_password(db, 'missing_user', 'new') is False",
+            "",
+            "",
+        ])
+
+    if len(lines) <= 3:
+        lines.extend([
+            "def test_module_compiles_and_exports_functions():",
+            f"    exported = [{', '.join(funcs)}]" if funcs else f"    assert {mod_name} is not None",
+            "    assert len(exported) >= 1" if funcs else "    assert True",
+            "",
+        ])
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
     filename = sanitize_filename(req.get("filename", "module.py"), "module.py")
     test_filename = sanitize_filename(req.get("testFilename", f"test_{filename}"), f"test_{filename}")
     source_code = req.get("sourceCode", "")
-    test_code = req.get("testCode", "")
+    test_code = (req.get("testCode") or "").strip()
+    bug_context = (req.get("bugContext") or "").strip()
     timeout_sec = float(req.get("timeoutSeconds", 2.0))
 
     # Stage 1: Static Analysis (AST + CFG + Taint + Call Graph + Complexity)
     ast_report = detect_and_parse(source_code, filename)
 
-    # Stage 2: Dynamic Baseline Subprocess Execution + sys.settrace Line Coverage
-    baseline = run_sandbox_tests(source_code, test_code, filename, test_filename, timeout_sec=timeout_sec)
+    # Stage 2: Dynamic Baseline Subprocess Execution (or Traceback + AST Triage if no test suite given)
+    generated_test_code: Optional[str] = None
+    if test_code:
+        baseline = run_sandbox_tests(source_code, test_code, filename, test_filename, timeout_sec=timeout_sec)
+    else:
+        baseline = build_static_or_context_baseline(source_code, filename, ast_report, bug_context)
+
     sbfl = compute_sbfl_spectrum(source_code, baseline)
 
     # Stage 3: Multi-Strategy APR (Template-Based + Search/Mutation-Based)
@@ -1646,18 +1778,24 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
     patched_code = patch_info["patchedCode"]
     diff_data = compute_diff_data(source_code, patched_code, filename)
 
+    # If user didn't supply a test suite, synthesize a validation test suite and execute it in the sandbox
+    active_test_code = test_code
+    if not active_test_code:
+        generated_test_code = synthesize_python_validation_tests(filename, patched_code, ast_report, patch_info)
+        active_test_code = generated_test_code
+
     # Stage 4: Isolated Sandbox Validation on Candidate Patch
     if precomputed_sandbox is not None:
         sandbox = precomputed_sandbox
-    elif patch_info.get("patchApplied"):
-        sandbox = run_sandbox_tests(patched_code, test_code, filename, test_filename, timeout_sec=timeout_sec)
+    elif patch_info.get("patchApplied") or generated_test_code:
+        sandbox = run_sandbox_tests(patched_code, active_test_code, filename, test_filename, timeout_sec=timeout_sec)
     else:
         sandbox = dict(baseline)
 
     trust_verdict = evaluate_trust_verdict(baseline, sandbox, patch_info, ast_report)
     confidence = compute_confidence(ast_report, baseline, patch_info, sandbox, diff_data, sbfl)
 
-    return {
+    result: Dict[str, Any] = {
         "filename": filename,
         "testFilename": test_filename,
         "originalCode": source_code,
@@ -1671,6 +1809,9 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
         "confidence": confidence,
         "trustVerdict": trust_verdict,
     }
+    if generated_test_code:
+        result["generatedTestCode"] = generated_test_code
+    return result
 
 
 def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:

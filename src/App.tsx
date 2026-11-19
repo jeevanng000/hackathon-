@@ -53,6 +53,7 @@ export default function App() {
   const [testFilename, setTestFilename] = useState(initialDemo.testFilename);
   const [sourceCode, setSourceCode] = useState(initialDemo.sourceCode);
   const [testCode, setTestCode] = useState(initialDemo.testCode);
+  const [bugContext, setBugContext] = useState(initialDemo.bugContext ?? '');
   const [caseDescription, setCaseDescription] = useState(initialDemo.description);
 
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
@@ -99,6 +100,7 @@ export default function App() {
     setTestFilename(demo.testFilename);
     setSourceCode(demo.sourceCode);
     setTestCode(demo.testCode);
+    setBugContext(demo.bugContext ?? '');
     setCaseDescription(demo.description);
     setAnalysis(null);
     setActiveDecision(null);
@@ -140,11 +142,6 @@ export default function App() {
       setActiveView('workbench');
       return;
     }
-    if (resolvedLanguage === 'python' && !testCode.trim()) {
-      setErrorMessage('Unit test suite cannot be empty for Python sandbox execution.');
-      setActiveView('workbench');
-      return;
-    }
 
     setIsRunning(true);
     setActiveDecision(null);
@@ -159,6 +156,7 @@ export default function App() {
           language: resolvedLanguage,
           sourceCode,
           testCode,
+          bugContext,
         }),
       });
       const data = await res.json();
@@ -168,6 +166,9 @@ export default function App() {
 
       const typed = data as AnalysisResponse;
       setAnalysis(typed);
+      if (!testCode.trim() && typed.generatedTestCode) {
+        setTestCode(typed.generatedTestCode);
+      }
 
       // Automatically record blocked trust-gate events in the Audit Ledger for full traceability
       if (typed.trustVerdict === 'blocked') {
@@ -336,6 +337,7 @@ export default function App() {
               testFilename={testFilename}
               sourceCode={sourceCode}
               testCode={testCode}
+              bugContext={bugContext}
               caseDescription={caseDescription}
               selectedLanguage={selectedLanguage}
               resolvedLanguage={resolvedLanguage}
@@ -344,6 +346,7 @@ export default function App() {
               onChangeTestFilename={setTestFilename}
               onChangeSourceCode={setSourceCode}
               onChangeTestCode={setTestCode}
+              onChangeBugContext={setBugContext}
               onResetDemo={handleResetDemo}
               canResetDemo={activeDemoId !== null}
               analysis={analysis}

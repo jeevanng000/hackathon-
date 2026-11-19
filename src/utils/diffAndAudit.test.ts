@@ -7,6 +7,7 @@ import {
   evaluateTrustGate,
   filterAuditEntries,
   formatAuditTimestamp,
+  formatStructuredMarkdownReport,
   serializeAuditToCsv,
 } from './diffAndAudit';
 import { classifySuspiciousness, computeOchiai, computeTarantula } from './sbfl';
@@ -269,4 +270,25 @@ test('Audit entry creation, filtering, CSV serialization, and 5-section Markdown
   assert.ok(csv.includes('pricing_engine.py'));
   assert.ok(csv.includes('ZeroDivisionError'));
   assert.equal(formatAuditTimestamp('2026-11-18T20:00:00.000Z').length, 19);
+
+  // Also verify traceback-only analysis (empty testCode + bugContext) auto-synthesizes tests and generates all 5 markdown headers
+  const authDemo = DEMO_CASES.find((d) => d.id === 'auth-service-none-sub')!;
+  const tracebackOnlyRes = runPythonEngineSync({
+    action: 'analyze',
+    filename: authDemo.filename,
+    testFilename: authDemo.testFilename,
+    sourceCode: authDemo.sourceCode,
+    testCode: '',
+    bugContext: authDemo.bugContext,
+    timeoutSeconds: 1.5,
+  });
+  assert.equal(tracebackOnlyRes.trustVerdict, 'verified');
+  assert.ok(tracebackOnlyRes.generatedTestCode?.includes('def test_authenticate_existing_and_missing_user'));
+
+  const md = formatStructuredMarkdownReport(tracebackOnlyRes, '', 'accepted');
+  assert.ok(md.includes('### 1. BUG SUMMARY & TRIAGE'));
+  assert.ok(md.includes('### 2. ROOT-CAUSE ANALYSIS'));
+  assert.ok(md.includes('### 3. MINIMAL SURGICAL PATCH (UNIFIED DIFF)'));
+  assert.ok(md.includes('### 4. REGRESSION & EDGE-CASE TEST SUITE'));
+  assert.ok(md.includes('### 5. AUDIT LOG ENTRY'));
 });

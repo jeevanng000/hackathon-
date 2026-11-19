@@ -12,6 +12,7 @@ interface WorkbenchViewProps {
   testFilename: string;
   sourceCode: string;
   testCode: string;
+  bugContext: string;
   caseDescription: string;
   selectedLanguage: 'auto' | SupportedLanguage;
   resolvedLanguage: SupportedLanguage;
@@ -20,6 +21,7 @@ interface WorkbenchViewProps {
   onChangeTestFilename: (name: string) => void;
   onChangeSourceCode: (code: string) => void;
   onChangeTestCode: (code: string) => void;
+  onChangeBugContext: (ctx: string) => void;
   onResetDemo: () => void;
   canResetDemo: boolean;
   analysis: AnalysisResponse | null;
@@ -131,6 +133,7 @@ export function WorkbenchView({
   testFilename,
   sourceCode,
   testCode,
+  bugContext,
   caseDescription,
   selectedLanguage,
   resolvedLanguage,
@@ -139,6 +142,7 @@ export function WorkbenchView({
   onChangeTestFilename,
   onChangeSourceCode,
   onChangeTestCode,
+  onChangeBugContext,
   onResetDemo,
   canResetDemo,
   analysis,
@@ -256,13 +260,40 @@ export function WorkbenchView({
         />
         <LineNumberedEditor
           id="test-editor"
-          label="Unit Test Suite"
+          label="Unit Test Suite (Optional — Auto-Synthesized if Blank)"
           filename={testFilename}
           onChangeFilename={onChangeTestFilename}
           value={testCode}
           onChange={onChangeTestCode}
         />
       </div>
+
+      {/* Failing Test Traceback / Bug Description Input */}
+      <section
+        aria-label="Failing test traceback or bug description"
+        className="bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden"
+      >
+        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-slate-50/70 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800">
+          <label
+            htmlFor="bug-context-input"
+            className="text-xs font-medium text-slate-600 dark:text-slate-300"
+          >
+            Failing Test Traceback / Error Log (Optional — Parsed for Line &amp; Exception Triage)
+          </label>
+          <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500">
+            4-Step AutoPatch Workflow Input
+          </span>
+        </div>
+        <textarea
+          id="bug-context-input"
+          value={bugContext}
+          onChange={(e) => onChangeBugContext(e.target.value)}
+          spellCheck={false}
+          rows={3}
+          placeholder="Paste failing test traceback, compiler error log, or bug description here (e.g. TypeError: 'NoneType' object is not subscriptable at line 6)..."
+          className="code-editor code-scroll w-full resize-y bg-white dark:bg-[#0F172A] px-3.5 py-2.5 font-mono text-xs leading-5 text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-inset focus:ring-2 focus:ring-[#2563EB]/25"
+        />
+      </section>
 
       {/* Loading Skeleton during execution */}
       {isRunning && (

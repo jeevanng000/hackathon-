@@ -141,6 +141,7 @@ export interface AnalysisResponse {
   language?: string;
   originalCode: string;
   patchedCode: string;
+  generatedTestCode?: string;
   astReport: AstReport;
   baseline: TestRunResult;
   sbfl?: SbflSpectrum;
@@ -184,6 +185,7 @@ export interface DemoCase {
   testFilename: string;
   sourceCode: string;
   testCode: string;
+  bugContext?: string;
 }
 
 export type AppView = 'workbench' | 'review' | 'audit';

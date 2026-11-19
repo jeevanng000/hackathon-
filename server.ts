@@ -23,6 +23,7 @@ interface EnginePayload {
   originalCode?: string;
   candidateCode?: string;
   testCode: string;
+  bugContext?: string;
   timeoutSeconds?: number;
   baseline?: unknown;
   targetLine?: number | null;
@@ -78,7 +79,7 @@ async function startServer() {
   });
 
   app.post('/api/analyze', async (req, res) => {
-    const { filename, testFilename, sourceCode, testCode, language } = req.body ?? {};
+    const { filename, testFilename, sourceCode, testCode, bugContext, language } = req.body ?? {};
     if (typeof sourceCode !== 'string' || !sourceCode.trim()) {
       res.status(400).json({ error: 'Source file cannot be empty.' });
       return;
@@ -87,20 +88,11 @@ async function startServer() {
     const safeFilename =
       typeof filename === 'string' && filename.trim() ? filename.trim() : 'module.py';
     const resolvedLang = resolveLanguage(language, safeFilename);
-
-    // Runtime-sandbox languages require a unit test suite; static-verifier languages allow optional tests
-    const needsTests = ['python', 'javascript', 'typescript', 'c', 'cpp', 'bash'].includes(
-      resolvedLang
-    );
-    if (needsTests && (typeof testCode !== 'string' || !testCode.trim())) {
-      res.status(400).json({ error: 'Unit test suite cannot be empty for runtime sandbox languages.' });
-      return;
-    }
-
     const safeTestFilename =
       typeof testFilename === 'string' && testFilename.trim()
         ? testFilename.trim()
         : `test_${safeFilename}`;
+    const safeBugContext = typeof bugContext === 'string' ? bugContext : '';
 
     try {
       if (resolvedLang === 'python') {
@@ -110,6 +102,7 @@ async function startServer() {
           testFilename: safeTestFilename,
           sourceCode,
           testCode: typeof testCode === 'string' ? testCode : '',
+          bugContext: safeBugContext,
           timeoutSeconds: 2.0,
         });
         res.json(result);
@@ -123,6 +116,7 @@ async function startServer() {
         testFilename: safeTestFilename,
         sourceCode,
         testCode: typeof testCode === 'string' ? testCode : '',
+        bugContext: safeBugContext,
         timeoutSeconds: 2.0,
       });
       res.json(result);

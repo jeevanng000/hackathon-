@@ -112,6 +112,19 @@ export function DiffReviewView({
     window.setTimeout(() => setCopiedDiff(false), 1800);
   };
 
+  const handleDownloadReport = () => {
+    const blob = new Blob([structuredReport], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    const baseName = analysis.filename.replace(/\.[^.]+$/, '');
+    anchor.download = `${baseName}-autopatch-report.md`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  };
+
   const baselineMap = new Map(analysis.baseline.tests.map((t) => [t.name, t]));
   const allTestNames = Array.from(
     new Set([
@@ -373,6 +386,19 @@ export function DiffReviewView({
                     <span>{diffTab === 'report' ? 'Copy Markdown Report' : 'Copy Diff'}</span>
                   </>
                 )}
+              </button>
+            )}
+            {diffTab === 'report' && (
+              <button
+                type="button"
+                onClick={handleDownloadReport}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-sans font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 rounded transition-colors cursor-pointer"
+              >
+                <Download
+                  className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400"
+                  aria-hidden="true"
+                />
+                <span>Download .md</span>
               </button>
             )}
           </div>

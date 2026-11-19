@@ -69,6 +69,9 @@ def test_reset_password_existing_and_missing_user():
     assert db["alice"]["password"] == "new-pw"
     assert reset_password(db, "unknown_user", "new-pw") is False
 `,
+    bugContext: `TypeError: 'NoneType' object is not subscriptable
+  File "backend/auth_service.py", line 6, in authenticate_user
+    if user["password"] == password:`,
   },
   {
     id: 'pricing-zero-div',
