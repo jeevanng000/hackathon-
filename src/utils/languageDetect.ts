@@ -148,6 +148,7 @@ export function detectLanguageFromCodeOrFilename(
   const code = (sourceCode || '').trim();
   const isDefaultName =
     !filename ||
+    filename === 'snippet.py' ||
     filename === 'live_judge_code.py' ||
     filename === 'module.py' ||
     filename === 'untitled';

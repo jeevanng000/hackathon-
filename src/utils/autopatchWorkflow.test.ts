@@ -8,6 +8,7 @@ import {
   getAdjacentBugId,
   normalizeAutoPatchSeverity,
   normalizeGeminiReport,
+  sortAutoPatchBugs,
   validateSubmissionInput,
 } from './autopatchWorkflow.ts';
 import type { AutoPatchBug } from '../types/autopatch.ts';
@@ -24,11 +25,12 @@ const SAMPLE_BUG: AutoPatchBug = {
   after_code:
     '    if total_units <= 0:\n        return 0.0\n    return round(total_revenue / total_units, 2)',
   test_cases: [
-    { input: 'items=[]', expected_output: '0.0', status: 'fail' },
+    { input: 'items=[]', expected_output: '0.0', status: 'fail', case_type: 'boundary' },
     {
       input: 'items=[{"price": 20, "qty": 2}]',
       expected_output: '20.0',
       status: 'pass',
+      case_type: 'normal',
     },
   ],
 };
@@ -47,11 +49,44 @@ test('normalizeAutoPatchSeverity handles casing and unknown values', () => {
   assert.equal(normalizeAutoPatchSeverity('unknown'), 'Medium');
 });
 
-test('normalizeGeminiReport clamps scores and populates defaults', () => {
+test('normalizeGeminiReport ranks bugs by severity then confidence and preserves case_type', () => {
   const report = normalizeGeminiReport({
     bugs: [
       {
-        id: 'b1',
+        id: 'b-low',
+        title: 'Minor style',
+        severity: 'low',
+        confidence: 99,
+        errored_statement: 'x = 1',
+        root_cause: 'unused var',
+        before_code: 'x = 1',
+        after_code: '',
+        test_cases: [{ case_type: 'normal', input: 'a=1', expected_output: '1', status: 'pass' }],
+      },
+      {
+        id: 'b-high-70',
+        title: 'Lower conf high',
+        severity: 'high',
+        confidence: 70,
+        errored_statement: 'y = 2',
+        root_cause: 'fails on None',
+        before_code: 'y = 2',
+        after_code: 'y = 2',
+        test_cases: [{ case_type: 'invalid', input: 'None', expected_output: 'error', status: 'fail' }],
+      },
+      {
+        id: 'b-crit',
+        title: 'SQL Injection',
+        severity: 'critical',
+        confidence: 95,
+        errored_statement: 'cursor.execute(q)',
+        root_cause: 'unsanitized input',
+        before_code: 'cursor.execute(q)',
+        after_code: 'cursor.execute(q, (u,))',
+        test_cases: [{ case_type: 'boundary', input: "' OR 1=1 --", expected_output: '[]', status: 'fail' }],
+      },
+      {
+        id: 'b-high-92',
         title: 'Null subscript',
         severity: 'high',
         confidence: 145,
@@ -59,21 +94,38 @@ test('normalizeGeminiReport clamps scores and populates defaults', () => {
         root_cause: 'user can be None',
         before_code: 'if user["password"] == password:',
         after_code: 'if user and user["password"] == password:',
-        test_cases: [{ input: 'unknown user', expected_output: 'INVALID', status: 'fail' }],
+        test_cases: [{ case_type: 'invalid', input: 'unknown user', expected_output: 'INVALID', status: 'fail' }],
       },
     ],
     summary: {
       health_score: -10,
-      overview: 'One high-severity issue found.',
-      prioritized_actions: ['Guard None return before indexing user dictionary'],
+      overview: 'Four issues found.',
+      prioritized_actions: ['Fix SQL injection first'],
     },
   });
 
-  assert.equal(report.bugs.length, 1);
-  assert.equal(report.bugs[0].severity, 'High');
-  assert.equal(report.bugs[0].confidence, 100);
+  assert.deepEqual(
+    report.bugs.map((b) => b.id),
+    ['b-crit', 'b-high-92', 'b-high-70', 'b-low']
+  );
+  assert.equal(report.bugs[1].severity, 'High');
+  assert.equal(report.bugs[1].confidence, 100);
+  assert.equal(report.bugs[0].test_cases[0].case_type, 'boundary');
+  assert.equal(report.bugs[1].test_cases[0].case_type, 'invalid');
   assert.equal(report.summary.health_score, 0);
   assert.equal(report.execution_source, 'gemini');
+});
+
+test('sortAutoPatchBugs keeps order deterministic across equal severities', () => {
+  const sorted = sortAutoPatchBugs([
+    { ...SAMPLE_BUG, id: 'med', severity: 'Medium', confidence: 95 },
+    { ...SAMPLE_BUG, id: 'crit-80', severity: 'Critical', confidence: 80 },
+    { ...SAMPLE_BUG, id: 'crit-98', severity: 'Critical', confidence: 98 },
+  ]);
+  assert.deepEqual(
+    sorted.map((b) => b.id),
+    ['crit-98', 'crit-80', 'med']
+  );
 });
 
 test('applyPatchToCode applies exact before_code replacement cleanly', () => {

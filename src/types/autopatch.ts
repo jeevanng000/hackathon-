@@ -252,11 +252,14 @@ export type DashboardTab = 'inspector' | 'diff';
 export type AutoPatchSeverity = 'Critical' | 'High' | 'Medium' | 'Low';
 export type AutoPatchTestStatus = 'pass' | 'fail';
 
+export type AutoPatchTestCaseType = 'normal' | 'boundary' | 'invalid';
+
 export interface AutoPatchTestCase {
   input: string;
   expected_output: string;
   actual_output?: string;
   status: AutoPatchTestStatus;
+  case_type?: AutoPatchTestCaseType;
 }
 
 export interface AutoPatchBug {

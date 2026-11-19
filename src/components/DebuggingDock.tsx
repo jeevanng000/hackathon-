@@ -117,9 +117,16 @@ export function DebuggingDock({
                             className="tactile-btn w-full flex items-center justify-between gap-3 rounded-xl border border-slate-200/70 dark:border-white/10 bg-white/60 dark:bg-white/[0.04] px-3 py-2 text-left cursor-pointer"
                           >
                             <div className="min-w-0">
-                              <p className="truncate font-mono text-xs text-slate-800 dark:text-slate-200">
-                                {tc.input}
-                              </p>
+                              <div className="flex items-center gap-1.5">
+                                {tc.case_type && (
+                                  <span className="shrink-0 rounded bg-slate-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-slate-700 dark:text-slate-300">
+                                    {tc.case_type}
+                                  </span>
+                                )}
+                                <p className="truncate font-mono text-xs text-slate-800 dark:text-slate-200">
+                                  {tc.input}
+                                </p>
+                              </div>
                               <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
                                 Expected: {tc.expected_output}
                               </p>

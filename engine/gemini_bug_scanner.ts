@@ -84,121 +84,137 @@ export async function runGeminiAutonomousAutopatch(params: {
       : '',
     `Source code or snippet:\n${params.sourceCode.slice(0, 16000)}`,
     `Execute the 5-stage autonomous AutoPatch workflow:
-1. Upload/Input parsing
-2. Bug & vulnerability scanning
-3. Root-cause explanation (why it fails and exact triggering input)
-4. Minimal focused patch generation (exact before_code matching lines from the input and clean after_code replacement preserving indentation)
-5. Test case validation (include realistic inputs, expected outputs, and pre-patch status 'fail' or regression 'pass')
-Return strictly structured JSON matching the responseSchema.`,
+1. Identify logical bugs, crashes, edge-case failures, and security weaknesses.
+2. Rank issues by severity (Critical > High > Medium > Low) and confidence (0-100).
+3. Explain the true root cause and exact triggering input—never just point to a line number.
+4. Generate the smallest, safest patch (exact before_code matching lines from the input and clean after_code replacement preserving indentation) without breaking unrelated functionality.
+5. Provide concrete validation test cases covering normal, boundary, and invalid inputs (set case_type to 'normal', 'boundary', or 'invalid') showing how the patch resolves each bug.
+Always respond in valid JSON matching the requested schema.`,
   ]
     .filter(Boolean)
     .join('\n\n');
 
+  const AUTOPATCH_TIMEOUT_MS = 45000;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let rawText = '{}';
   try {
-    const response = await client.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        systemInstruction:
-          'You are AutoPatch, an autonomous software bug detection and repair engine. Return strictly valid JSON with detected bugs, minimal exact-matching before_code/after_code patches, realistic test cases, root-cause explanations naming triggering inputs, trace_logs, and summary health score + prioritized actions. Never invent fictional line content for before_code; copy the exact buggy snippet from the input.',
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            detected_language: {
-              type: Type.STRING,
-              description: 'Detected programming language such as python, typescript, javascript, java, or c',
-            },
-            trace_logs: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-              description: 'Concise 4 to 6 stage execution trace log lines covering scan, root cause, fix, and test validation',
-            },
-            bugs: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  id: { type: Type.STRING },
-                  title: { type: Type.STRING },
-                  severity: {
-                    type: Type.STRING,
-                    description: 'Strictly one of: Critical, High, Medium, Low',
-                  },
-                  confidence: {
-                    type: Type.INTEGER,
-                    description: 'Confidence percentage from 0 to 100',
-                  },
-                  errored_statement: {
-                    type: Type.STRING,
-                    description: 'Exact buggy line or statement from the provided input',
-                  },
-                  root_cause: {
-                    type: Type.STRING,
-                    description: 'Clear explanation of why the bug fails and what exact input triggers it',
-                  },
-                  before_code: {
-                    type: Type.STRING,
-                    description: 'Exact snippet from the source code before repair',
-                  },
-                  after_code: {
-                    type: Type.STRING,
-                    description: 'Focused minimal patched replacement snippet preserving indentation',
-                  },
-                  test_cases: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        input: { type: Type.STRING },
-                        expected_output: { type: Type.STRING },
-                        actual_output: { type: Type.STRING },
-                        status: {
-                          type: Type.STRING,
-                          description: 'Strictly one of: pass, fail',
+    const response = await Promise.race([
+      client.models.generateContent({
+        model: MODEL_NAME,
+        contents: prompt,
+        config: {
+          systemInstruction:
+            'You are AutoPatch, an autonomous software debugging and program repair engine. When given source code or a problem description: 1. Identify logical bugs, crashes, edge-case failures, and security weaknesses. 2. Rank issues by severity and confidence. 3. Explain the true root cause and triggering input—never just point to a line number. 4. Generate the smallest, safest patch that fixes the root cause without breaking unrelated functionality. 5. Provide concrete validation test cases (normal, boundary, and invalid inputs) showing that the patch resolves the bug. Always respond in valid JSON matching the requested schema. Never invent fictional line content for before_code; copy the exact buggy snippet from the input.',
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              detected_language: {
+                type: Type.STRING,
+                description: 'Detected programming language such as python, typescript, javascript, java, or c',
+              },
+              trace_logs: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+                description: 'Concise 4 to 6 stage execution trace log lines covering scan, root cause, fix, and test validation',
+              },
+              bugs: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    id: { type: Type.STRING },
+                    title: { type: Type.STRING },
+                    severity: {
+                      type: Type.STRING,
+                      description: 'Strictly one of: Critical, High, Medium, Low',
+                    },
+                    confidence: {
+                      type: Type.INTEGER,
+                      description: 'Confidence percentage from 0 to 100',
+                    },
+                    errored_statement: {
+                      type: Type.STRING,
+                      description: 'Exact buggy line or statement from the provided input',
+                    },
+                    root_cause: {
+                      type: Type.STRING,
+                      description: 'Clear explanation of the true root cause and exact triggering input (never just a line number)',
+                    },
+                    before_code: {
+                      type: Type.STRING,
+                      description: 'Exact snippet from the source code before repair',
+                    },
+                    after_code: {
+                      type: Type.STRING,
+                      description: 'Smallest, safest replacement snippet preserving indentation without breaking unrelated code',
+                    },
+                    test_cases: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          case_type: {
+                            type: Type.STRING,
+                            description: 'Strictly one of: normal, boundary, invalid',
+                          },
+                          input: { type: Type.STRING },
+                          expected_output: { type: Type.STRING },
+                          actual_output: { type: Type.STRING },
+                          status: {
+                            type: Type.STRING,
+                            description: 'Strictly one of: pass, fail',
+                          },
                         },
+                        required: ['input', 'expected_output', 'status'],
                       },
-                      required: ['input', 'expected_output', 'status'],
                     },
                   },
-                },
-                required: [
-                  'id',
-                  'title',
-                  'severity',
-                  'confidence',
-                  'errored_statement',
-                  'root_cause',
-                  'before_code',
-                  'after_code',
-                  'test_cases',
-                ],
-              },
-            },
-            summary: {
-              type: Type.OBJECT,
-              properties: {
-                health_score: {
-                  type: Type.INTEGER,
-                  description: 'Overall code health score from 0 to 100',
-                },
-                overview: { type: Type.STRING },
-                prioritized_actions: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
+                  required: [
+                    'id',
+                    'title',
+                    'severity',
+                    'confidence',
+                    'errored_statement',
+                    'root_cause',
+                    'before_code',
+                    'after_code',
+                    'test_cases',
+                  ],
                 },
               },
-              required: ['health_score', 'overview', 'prioritized_actions'],
+              summary: {
+                type: Type.OBJECT,
+                properties: {
+                  health_score: {
+                    type: Type.INTEGER,
+                    description: 'Overall code health score from 0 to 100',
+                  },
+                  overview: { type: Type.STRING },
+                  prioritized_actions: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
+                },
+                required: ['health_score', 'overview', 'prioritized_actions'],
+              },
             },
+            required: ['detected_language', 'trace_logs', 'bugs', 'summary'],
           },
-          required: ['detected_language', 'trace_logs', 'bugs', 'summary'],
         },
-      },
-    });
+      }),
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
+          () => reject(new Error('Gemini scan timed out after 45s. You can retry or run Local Deterministic Sandbox.')),
+          AUTOPATCH_TIMEOUT_MS
+        );
+      }),
+    ]);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     rawText = (response.text ?? '{}').trim();
   } catch (err) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     const rawMsg = err instanceof Error ? err.message : String(err);
     try {
       const parsedErr = JSON.parse(rawMsg);

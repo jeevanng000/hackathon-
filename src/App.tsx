@@ -17,7 +17,7 @@ import {
   getAdjacentBugId,
   validateSubmissionInput,
 } from './utils/autopatchWorkflow';
-import { detectLanguageFromFilename } from './utils/languageDetect';
+import { detectLanguageFromCodeOrFilename } from './utils/languageDetect';
 import { isEditableTargetElement } from './utils/unifiedFindings';
 import { AuroraBackdrop } from './components/AuroraBackdrop';
 import { TopBar, type MainScreen } from './components/TopBar';
@@ -164,7 +164,7 @@ export default function App() {
       );
 
       const safeName = fileVal.trim() || 'snippet.py';
-      const lang = detectLanguageFromFilename(safeName);
+      const lang = detectLanguageFromCodeOrFilename(codeVal, safeName);
 
       try {
         let nextReport: AutoPatchReport;

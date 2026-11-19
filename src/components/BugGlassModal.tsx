@@ -223,9 +223,24 @@ export function BugGlassModal({
                           className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-slate-200/70 dark:border-white/10 bg-white/65 dark:bg-white/[0.04] px-3.5 py-2.5"
                         >
                           <div className="min-w-0 space-y-0.5">
-                            <p className="font-mono text-xs text-slate-800 dark:text-slate-100 break-all">
-                              Input: {tc.input}
-                            </p>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {tc.case_type && (
+                                <span
+                                  className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                                    tc.case_type === 'invalid'
+                                      ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300'
+                                      : tc.case_type === 'boundary'
+                                      ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                      : 'bg-slate-500/15 text-slate-700 dark:text-slate-300'
+                                  }`}
+                                >
+                                  {tc.case_type}
+                                </span>
+                              )}
+                              <p className="font-mono text-xs text-slate-800 dark:text-slate-100 break-all">
+                                Input: {tc.input}
+                              </p>
+                            </div>
                             <p className="text-xs text-slate-600 dark:text-slate-300">
                               Expected: <span className="font-mono">{tc.expected_output}</span>
                             </p>

@@ -4,6 +4,7 @@ import type {
   AutoPatchReport,
   AutoPatchSeverity,
   AutoPatchTestCase,
+  AutoPatchTestCaseType,
   SafeChangeHistoryEntry,
   SafePatchDecision,
   UnifiedBugFinding,
@@ -17,9 +18,32 @@ const VALID_SEVERITIES: Record<string, AutoPatchSeverity> = {
   low: 'Low',
 };
 
+const SEVERITY_WEIGHT: Record<AutoPatchSeverity, number> = {
+  Critical: 4,
+  High: 3,
+  Medium: 2,
+  Low: 1,
+};
+
 export function normalizeAutoPatchSeverity(raw: unknown): AutoPatchSeverity {
   const key = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
   return VALID_SEVERITIES[key] ?? 'Medium';
+}
+
+export function normalizeTestCaseType(raw: unknown): AutoPatchTestCaseType | undefined {
+  const key = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (key === 'normal' || key === 'boundary' || key === 'invalid') {
+    return key;
+  }
+  return undefined;
+}
+
+export function sortAutoPatchBugs(bugs: ReadonlyArray<AutoPatchBug>): AutoPatchBug[] {
+  return [...bugs].sort((a, b) => {
+    const sevDiff = SEVERITY_WEIGHT[b.severity] - SEVERITY_WEIGHT[a.severity];
+    if (sevDiff !== 0) return sevDiff;
+    return b.confidence - a.confidence;
+  });
 }
 
 export function clampPercentage(value: unknown, fallback = 85): number {
@@ -55,12 +79,13 @@ export function normalizeGeminiReport(
   const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const rawBugs = Array.isArray(obj.bugs) ? obj.bugs : [];
 
-  const bugs: AutoPatchBug[] = rawBugs.map((item, idx) => {
+  const parsedBugs: AutoPatchBug[] = rawBugs.map((item, idx) => {
     const b = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
     const rawTests = Array.isArray(b.test_cases) ? b.test_cases : [];
     const testCases: AutoPatchTestCase[] = rawTests.map((tc) => {
       const t = (tc && typeof tc === 'object' ? tc : {}) as Record<string, unknown>;
       const statusRaw = typeof t.status === 'string' ? t.status.trim().toLowerCase() : 'fail';
+      const caseType = normalizeTestCaseType(t.case_type);
       return {
         input: typeof t.input === 'string' ? t.input : String(t.input ?? 'default_input'),
         expected_output:
@@ -69,6 +94,7 @@ export function normalizeGeminiReport(
             : String(t.expected_output ?? 'No exception'),
         actual_output: typeof t.actual_output === 'string' ? t.actual_output : undefined,
         status: statusRaw === 'pass' || statusRaw === 'passed' ? 'pass' : 'fail',
+        ...(caseType ? { case_type: caseType } : {}),
       };
     });
 
@@ -88,6 +114,8 @@ export function normalizeGeminiReport(
       test_cases: testCases,
     };
   });
+
+  const bugs = sortAutoPatchBugs(parsedBugs);
 
   const rawSummary = (obj.summary && typeof obj.summary === 'object'
     ? obj.summary
@@ -152,11 +180,23 @@ export function adaptDeterministicAnalysisToReport(
   const unified = analysis.unifiedFindings ?? buildUnifiedFindings(analysis, []);
   const confidenceScore = clampPercentage(analysis.confidence?.score, 84);
 
+  const inferCaseType = (name: string): AutoPatchTestCaseType => {
+    const lower = name.toLowerCase();
+    if (/(empty|zero|boundary|edge|limit|max|min|overflow|large|null|none)/.test(lower)) {
+      return 'boundary';
+    }
+    if (/(invalid|inject|malformed|bad|missing|error|unauth|wrong|negative)/.test(lower)) {
+      return 'invalid';
+    }
+    return 'normal';
+  };
+
   const testCasesFromSandbox: AutoPatchTestCase[] = (analysis.sandbox?.tests ?? []).map((t) => ({
     input: t.name,
     expected_output: 'Assertion passes in isolated sandbox',
     actual_output: t.errorMessage || (t.status === 'passed' ? 'Passed' : 'Failed'),
     status: t.status === 'passed' ? 'pass' : 'fail',
+    case_type: inferCaseType(t.name),
   }));
 
   const baselineCases: AutoPatchTestCase[] = (analysis.baseline?.tests ?? []).map((t) => ({
@@ -164,9 +204,10 @@ export function adaptDeterministicAnalysisToReport(
     expected_output: 'No unhandled exception or assertion failure',
     actual_output: t.errorMessage || (t.status === 'passed' ? 'Passed' : 'Failed'),
     status: t.status === 'passed' ? 'pass' : 'fail',
+    case_type: inferCaseType(t.name),
   }));
 
-  const bugs: AutoPatchBug[] = unified.map((f, idx) => {
+  const rawBugs: AutoPatchBug[] = unified.map((f, idx) => {
     const isPatchApplied = analysis.patchInfo?.patchApplied && f.canAutoFix;
     const cases: AutoPatchTestCase[] =
       isPatchApplied && testCasesFromSandbox.length > 0
@@ -179,6 +220,7 @@ export function adaptDeterministicAnalysisToReport(
               expected_output: 'Safe handled return without crash',
               actual_output: f.impactSummary,
               status: 'fail',
+              case_type: 'boundary',
             },
           ];
 
@@ -199,6 +241,8 @@ export function adaptDeterministicAnalysisToReport(
       test_cases: cases,
     };
   });
+
+  const bugs = sortAutoPatchBugs(rawBugs);
 
   const passedCount = analysis.sandbox?.passed ?? 0;
   const totalCount = analysis.sandbox?.total ?? 0;
