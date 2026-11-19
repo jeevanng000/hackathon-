@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import type {
   AnalysisResponse,
+  AuditDecision,
   BugCategory,
   ExplanationMode,
   UnifiedBugFinding,
@@ -32,6 +33,7 @@ import {
   type SupportedLanguage,
 } from '../utils/languageDetect';
 import { BugCodeStage, type CodeStageMode } from './BugCodeStage';
+import { WorkflowStepper } from './WorkflowStepper';
 
 interface WorkbenchViewProps {
   filename: string;
@@ -76,6 +78,10 @@ interface WorkbenchViewProps {
   onAddVoiceNote: (note: VoiceNote) => void;
   onUpdateVoiceNote: (noteId: string, patch: Partial<VoiceNote>) => void;
   onDeleteVoiceNote: (noteId: string) => void;
+  activeDecision: AuditDecision | null;
+  auditCount: number;
+  onRunAnalysis: () => void;
+  onOpenAudit: () => void;
 }
 
 type CategoryFilter = 'all' | BugCategory;
@@ -198,10 +204,13 @@ export function WorkbenchView({
   onAddVoiceNote,
   onUpdateVoiceNote,
   onDeleteVoiceNote,
+  activeDecision,
+  auditCount,
+  onRunAnalysis,
+  onOpenAudit,
 }: WorkbenchViewProps) {
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all');
   const [showTestsPanel, setShowTestsPanel] = useState(false);
-  const [showGuide, setShowGuide] = useState(true);
 
   const langMeta = getLanguageMeta(resolvedLanguage);
 
@@ -216,13 +225,6 @@ export function WorkbenchView({
   const resolvedCount = unifiedFindings.filter((f) =>
     resolvedFindingIds.has(f.id)
   ).length;
-
-  // Guided step status
-  const currentStep = !analysis
-    ? 1
-    : resolvedCount === 0 && !hasLocalEdits
-    ? 2
-    : 3;
 
   const filterButtons: Array<{
     id: CategoryFilter;
@@ -386,65 +388,26 @@ export function WorkbenchView({
         </div>
       </div>
 
-      {/* Guided 3-Step Strip for Easy One-Time Accessibility */}
-      {showGuide && (
-        <section
-          aria-label="Quick start guide"
-          className="bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 rounded-lg px-4 py-3 flex flex-col md:flex-row md:items-center justify-between gap-3"
-        >
-          <ol className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
-            {[
-              {
-                num: 1,
-                text: 'Pick a sample or paste your code',
-              },
-              {
-                num: 2,
-                text: 'Click "Scan & Find Bugs" then click any colored line',
-              },
-              {
-                num: 3,
-                text: 'Apply a one-click fix and verify tests pass',
-              },
-            ].map((step) => {
-              const isDone = currentStep > step.num;
-              const isActive = currentStep === step.num;
-              return (
-                <li key={step.num} className="flex items-center gap-2">
-                  <span
-                    className={`inline-flex items-center justify-center w-5 h-5 rounded font-mono text-[11px] font-semibold tabular-nums ${
-                      isDone
-                        ? 'bg-emerald-100 dark:bg-emerald-950/70 text-[#15803D] dark:text-emerald-300'
-                        : isActive
-                        ? 'bg-[#2563EB] text-white'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
-                    }`}
-                  >
-                    {step.num}
-                  </span>
-                  <span
-                    className={
-                      isActive
-                        ? 'font-medium text-slate-950 dark:text-slate-50'
-                        : 'text-slate-600 dark:text-slate-400'
-                    }
-                  >
-                    {step.text}
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
-
-          <button
-            type="button"
-            onClick={() => setShowGuide(false)}
-            className="text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 self-end md:self-auto whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            Hide guide
-          </button>
-        </section>
-      )}
+      {/* Visual Bug Lifecycle Progress Stepper (Analysis -> Inspection -> Verification -> Audit) */}
+      <WorkflowStepper
+        analysis={analysis}
+        isRunning={isRunning}
+        isValidating={isValidating}
+        findingsCount={unifiedFindings.length}
+        resolvedCount={resolvedCount}
+        hasLocalEdits={hasLocalEdits}
+        activeDecision={activeDecision}
+        auditCount={auditCount}
+        onTriggerAnalysis={onRunAnalysis}
+        onFocusInspection={() => {
+          onChangeStageMode('inspect');
+          if (!activeFindingId && unifiedFindings.length > 0) {
+            onSelectFinding(unifiedFindings[0].id);
+          }
+        }}
+        onOpenVerification={onOpenReview}
+        onOpenAudit={onOpenAudit}
+      />
 
       {/* Error Alert */}
       {errorMessage && (
@@ -629,7 +592,7 @@ export function WorkbenchView({
         >
           <div className="px-4 py-2.5 bg-slate-50/70 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
             <h2 className="font-display text-xs font-semibold text-slate-700 dark:text-slate-200">
-              All Highlighted Bugs ({filteredFindings.length}) — click any row to open its line popup
+              All Highlighted Bugs ({filteredFindings.length}) — click any row or press n / p to navigate
             </h2>
             <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
               {explanationMode === 'plain' ? 'Plain English View' : 'Technical View'}

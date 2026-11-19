@@ -7,8 +7,17 @@ import {
   Circle,
   Loader2,
   FilePlus2,
+  ShieldAlert,
+  Info,
+  CheckCircle2,
 } from 'lucide-react';
-import type { AnalysisResponse, DemoCase } from '../types/autopatch';
+import type {
+  AnalysisResponse,
+  BugSeverity,
+  DemoCase,
+  UnifiedBugFinding,
+} from '../types/autopatch';
+import { sortFindingsBySeverity } from '../utils/unifiedFindings';
 
 interface SidebarProps {
   demoCases: DemoCase[];
@@ -22,7 +31,35 @@ interface SidebarProps {
   decisionRecorded: boolean;
   mobileOpen: boolean;
   onCloseMobile: () => void;
+  findings: UnifiedBugFinding[];
+  activeFindingId: string | null;
+  resolvedFindingIds: Set<string>;
+  onSelectFinding: (id: string) => void;
 }
+
+const SEVERITY_BADGES: Record<
+  BugSeverity,
+  { label: string; badgeCls: string; Icon: typeof ShieldAlert }
+> = {
+  critical: {
+    label: 'Critical',
+    badgeCls:
+      'bg-rose-100 dark:bg-rose-950/75 text-[#991B1B] dark:text-rose-200 border-rose-200 dark:border-rose-800',
+    Icon: ShieldAlert,
+  },
+  warning: {
+    label: 'Warning',
+    badgeCls:
+      'bg-amber-100 dark:bg-amber-950/75 text-[#92400E] dark:text-amber-200 border-amber-200 dark:border-amber-800',
+    Icon: AlertTriangle,
+  },
+  info: {
+    label: 'Info',
+    badgeCls:
+      'bg-blue-100 dark:bg-blue-950/75 text-[#1E40AF] dark:text-blue-200 border-blue-200 dark:border-blue-800',
+    Icon: Info,
+  },
+};
 
 type StageStatus = 'idle' | 'running' | 'passed' | 'warning' | 'blocked';
 
@@ -131,11 +168,19 @@ export function Sidebar({
   decisionRecorded,
   mobileOpen,
   onCloseMobile,
+  findings,
+  activeFindingId,
+  resolvedFindingIds,
+  onSelectFinding,
 }: SidebarProps) {
   const sourceInputRef = useRef<HTMLInputElement>(null);
   const testInputRef = useRef<HTMLInputElement>(null);
 
   const stages = derivePipelineStages(analysis, isRunning, decisionRecorded);
+  const prioritizedFindings = sortFindingsBySeverity(findings);
+  const criticalCount = prioritizedFindings.filter((f) => f.severity === 'critical').length;
+  const warningCount = prioritizedFindings.filter((f) => f.severity === 'warning').length;
+  const infoCount = prioritizedFindings.filter((f) => f.severity === 'info').length;
 
   const handleFileRead = (
     file: File | undefined,
@@ -200,6 +245,96 @@ export function Sidebar({
           })}
         </div>
       </div>
+
+      {/* Prioritized Bug Findings with Color-Coded Severity Badges */}
+      {prioritizedFindings.length > 0 && (
+        <div className="p-4 border-b border-slate-200 dark:border-slate-800">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h2 className="font-display text-xs font-semibold tracking-wide text-slate-500 dark:text-slate-400">
+              Bug Findings
+            </h2>
+            <span className="font-mono text-xs tabular-nums text-slate-400 dark:text-slate-500">
+              {prioritizedFindings.length}
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 mb-2.5">
+            {criticalCount > 0 && (
+              <span className="text-[#991B1B] dark:text-rose-300 font-medium">
+                {criticalCount} Critical
+              </span>
+            )}
+            {warningCount > 0 && (
+              <>
+                {criticalCount > 0 && <span aria-hidden="true">·</span>}
+                <span className="text-[#92400E] dark:text-amber-300 font-medium">
+                  {warningCount} Warning
+                </span>
+              </>
+            )}
+            {infoCount > 0 && (
+              <>
+                {(criticalCount > 0 || warningCount > 0) && <span aria-hidden="true">·</span>}
+                <span className="text-[#1E40AF] dark:text-blue-300 font-medium">
+                  {infoCount} Info
+                </span>
+              </>
+            )}
+          </div>
+
+          <ul className="space-y-1.5" aria-label="Prioritized bug findings">
+            {prioritizedFindings.map((finding) => {
+              const isSelected = activeFindingId === finding.id;
+              const isFixed = resolvedFindingIds.has(finding.id);
+              const sevCfg = SEVERITY_BADGES[finding.severity];
+              const SevIcon = sevCfg.Icon;
+
+              return (
+                <li key={finding.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectFinding(finding.id);
+                      onCloseMobile();
+                    }}
+                    aria-current={isSelected ? 'true' : undefined}
+                    className={`w-full text-left px-2.5 py-2 rounded-md border transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#2563EB] ${
+                      isSelected
+                        ? 'bg-blue-50/80 dark:bg-blue-950/40 border-blue-200/80 dark:border-blue-800/70 text-slate-950 dark:text-white'
+                        : 'border-transparent hover:bg-slate-50 dark:hover:bg-slate-800/60 text-slate-800 dark:text-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-xs font-medium leading-snug line-clamp-2 min-w-0">
+                        {finding.title}
+                      </span>
+                      <span
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold border rounded whitespace-nowrap shrink-0 ${sevCfg.badgeCls}`}
+                      >
+                        <SevIcon className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
+                        <span>{sevCfg.label}</span>
+                      </span>
+                    </div>
+
+                    <div className="mt-1 flex items-center gap-1.5 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                      <span>Line {finding.line}</span>
+                      {isFixed && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="inline-flex items-center gap-0.5 font-sans font-medium text-[#15803D] dark:text-emerald-400">
+                            <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                            <span>Fixed</span>
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
       {/* Section 2: Paste New or Upload Local Files */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-800">

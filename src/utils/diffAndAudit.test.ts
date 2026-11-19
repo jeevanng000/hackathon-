@@ -16,7 +16,11 @@ import {
   applyAllSafeFixesToSource,
   applyFindingFixToSource,
   buildUnifiedFindings,
+  getAdjacentFindingId,
+  isEditableTargetElement,
+  sortFindingsBySeverity,
 } from './unifiedFindings';
+import { deriveWorkflowLifecycleSteps } from './workflowStepper';
 import { DEMO_CASES } from '../data/demoCases';
 import type { AnalysisResponse, VoiceNote } from '../types/autopatch';
 import { runMultiLangAnalysis } from '../../engine/multi_lang_engine';
@@ -389,5 +393,114 @@ test('Voice notes attach reasoning into audit entries, CSV export, and Markdown 
   const md = formatStructuredMarkdownReport(analysis, retryDemo.testCode, 'override', sampleNotes);
   assert.ok(md.includes('Developer Voice Notes'));
   assert.ok(md.includes('1 attached'));
+});
+
+test('Keyboard bug navigation wraps cleanly and ignores editable targets', () => {
+  const findings = [{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }];
+  assert.equal(getAdjacentFindingId([], null, 'next'), null);
+  assert.equal(getAdjacentFindingId(findings, null, 'next'), 'f1');
+  assert.equal(getAdjacentFindingId(findings, null, 'prev'), 'f3');
+  assert.equal(getAdjacentFindingId(findings, 'f1', 'next'), 'f2');
+  assert.equal(getAdjacentFindingId(findings, 'f3', 'next'), 'f1');
+  assert.equal(getAdjacentFindingId(findings, 'f1', 'prev'), 'f3');
+  assert.equal(getAdjacentFindingId(findings, 'f2', 'prev'), 'f1');
+
+  assert.equal(isEditableTargetElement({ tagName: 'INPUT' }), true);
+  assert.equal(isEditableTargetElement({ tagName: 'TEXTAREA' }), true);
+  assert.equal(isEditableTargetElement({ tagName: 'SELECT' }), true);
+  assert.equal(isEditableTargetElement({ tagName: 'AUDIO' }), true);
+  assert.equal(isEditableTargetElement({ tagName: 'DIV', isContentEditable: true }), true);
+  assert.equal(isEditableTargetElement({ tagName: 'BUTTON', isContentEditable: false }), false);
+  assert.equal(isEditableTargetElement(null), false);
+});
+
+test('sortFindingsBySeverity prioritizes Critical -> Warning -> Info and ties by line', () => {
+  const sample = [
+    { id: 'info-10', line: 10, severity: 'info' as const },
+    { id: 'warn-5', line: 5, severity: 'warning' as const },
+    { id: 'crit-12', line: 12, severity: 'critical' as const },
+    { id: 'crit-3', line: 3, severity: 'critical' as const },
+    { id: 'warn-2', line: 2, severity: 'warning' as const },
+  ];
+
+  const sorted = sortFindingsBySeverity(sample);
+  assert.deepEqual(
+    sorted.map((f) => f.id),
+    ['crit-3', 'crit-12', 'warn-2', 'warn-5', 'info-10']
+  );
+});
+
+test('deriveWorkflowLifecycleSteps tracks Analysis -> Inspection -> Verification -> Audit', () => {
+  const initial = deriveWorkflowLifecycleSteps({
+    analysis: null,
+    isRunning: false,
+    isValidating: false,
+    findingsCount: 0,
+    resolvedCount: 0,
+    hasLocalEdits: false,
+    activeDecision: null,
+    auditCount: 0,
+  });
+  assert.deepEqual(
+    initial.map((s) => [s.id, s.state]),
+    [
+      ['analysis', 'active'],
+      ['inspection', 'upcoming'],
+      ['verification', 'upcoming'],
+      ['audit', 'upcoming'],
+    ]
+  );
+
+  const pricingDemo = DEMO_CASES.find((d) => d.id === 'pricing-zero-div')!;
+  const analysis = runPythonEngineSync({
+    action: 'analyze',
+    filename: pricingDemo.filename,
+    testFilename: pricingDemo.testFilename,
+    sourceCode: pricingDemo.sourceCode,
+    testCode: pricingDemo.testCode,
+    timeoutSeconds: 1.5,
+  });
+
+  const postScan = deriveWorkflowLifecycleSteps({
+    analysis,
+    isRunning: false,
+    isValidating: false,
+    findingsCount: 2,
+    resolvedCount: 0,
+    hasLocalEdits: false,
+    activeDecision: null,
+    auditCount: 0,
+  });
+  assert.equal(postScan[0].state, 'completed');
+  assert.equal(postScan[1].state, 'active');
+  assert.equal(postScan[2].state, 'upcoming');
+
+  const afterFix = deriveWorkflowLifecycleSteps({
+    analysis,
+    isRunning: false,
+    isValidating: false,
+    findingsCount: 2,
+    resolvedCount: 2,
+    hasLocalEdits: true,
+    activeDecision: null,
+    auditCount: 1,
+  });
+  assert.equal(afterFix[1].state, 'completed');
+  assert.equal(afterFix[2].state, 'active');
+
+  const afterAudit = deriveWorkflowLifecycleSteps({
+    analysis,
+    isRunning: false,
+    isValidating: false,
+    findingsCount: 2,
+    resolvedCount: 2,
+    hasLocalEdits: false,
+    activeDecision: 'accepted',
+    auditCount: 2,
+  });
+  assert.deepEqual(
+    afterAudit.map((s) => s.state),
+    ['completed', 'completed', 'completed', 'completed']
+  );
 });
 

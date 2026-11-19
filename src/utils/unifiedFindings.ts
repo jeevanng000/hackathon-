@@ -382,3 +382,68 @@ export function applyAllSafeFixesToSource(
     appliedIds,
   };
 }
+
+/**
+ * Computes the next or previous finding ID in the active list with wrap-around.
+ */
+export function getAdjacentFindingId(
+  findings: ReadonlyArray<{ id: string }>,
+  activeFindingId: string | null,
+  direction: 'next' | 'prev'
+): string | null {
+  if (findings.length === 0) return null;
+  const currentIdx = activeFindingId
+    ? findings.findIndex((f) => f.id === activeFindingId)
+    : -1;
+
+  if (currentIdx === -1) {
+    return direction === 'next'
+      ? findings[0].id
+      : findings[findings.length - 1].id;
+  }
+
+  const delta = direction === 'next' ? 1 : -1;
+  const targetIdx = (currentIdx + delta + findings.length) % findings.length;
+  return findings[targetIdx].id;
+}
+
+/**
+ * Returns true if keyboard shortcuts should be ignored because the user is typing
+ * inside a form field, editable region, or interacting with an audio/video control.
+ */
+export function isEditableTargetElement(
+  target: { tagName?: string; isContentEditable?: boolean } | null
+): boolean {
+  if (!target) return false;
+  if (target.isContentEditable) return true;
+  const tag = (target.tagName ?? '').toUpperCase();
+  return (
+    tag === 'INPUT' ||
+    tag === 'TEXTAREA' ||
+    tag === 'SELECT' ||
+    tag === 'AUDIO' ||
+    tag === 'VIDEO'
+  );
+}
+
+const SEVERITY_PRIORITY: Record<BugSeverity, number> = {
+  critical: 0,
+  warning: 1,
+  info: 2,
+};
+
+/**
+ * Returns a new array of findings prioritized by severity (Critical -> Warning -> Info),
+ * breaking ties by ascending line number.
+ */
+export function sortFindingsBySeverity<
+  T extends Pick<UnifiedBugFinding, 'severity' | 'line'>,
+>(findings: ReadonlyArray<T>): T[] {
+  return [...findings].sort(
+    (a, b) =>
+      SEVERITY_PRIORITY[a.severity] - SEVERITY_PRIORITY[b.severity] ||
+      a.line - b.line
+  );
+}
+
+

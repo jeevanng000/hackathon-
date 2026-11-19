@@ -504,6 +504,14 @@ export default function App() {
           decisionRecorded={activeDecision !== null}
           mobileOpen={mobileMenuOpen}
           onCloseMobile={() => setMobileMenuOpen(false)}
+          findings={unifiedFindings}
+          activeFindingId={activeFindingId}
+          resolvedFindingIds={resolvedFindingIds}
+          onSelectFinding={(id) => {
+            setActiveFindingId(id);
+            setStageMode('inspect');
+            setActiveView('workbench');
+          }}
         />
 
         <main className="flex-1 min-w-0 overflow-y-auto">
@@ -587,6 +595,10 @@ export default function App() {
               onAddVoiceNote={handleAddVoiceNote}
               onUpdateVoiceNote={handleUpdateVoiceNote}
               onDeleteVoiceNote={handleDeleteVoiceNote}
+              activeDecision={activeDecision}
+              auditCount={auditEntries.length}
+              onRunAnalysis={handleRunAnalysis}
+              onOpenAudit={() => setActiveView('audit')}
             />
           )}
 

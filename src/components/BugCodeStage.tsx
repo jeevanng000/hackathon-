@@ -20,6 +20,10 @@ import type {
   UnifiedBugFinding,
   VoiceNote,
 } from '../types/autopatch';
+import {
+  getAdjacentFindingId,
+  isEditableTargetElement,
+} from '../utils/unifiedFindings';
 import { VoiceNoteRecorder } from './VoiceNoteRecorder';
 
 export type CodeStageMode = 'inspect' | 'edit';
@@ -168,17 +172,6 @@ export function BugCodeStage({
     }
   }, [activeFinding?.id, stageMode]);
 
-  // Close popover on Escape
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && activeFindingId) {
-        onSelectFinding(null);
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeFindingId, onSelectFinding]);
-
   const handleJumpToEditLine = (lineNum: number) => {
     onChangeStageMode('edit');
     window.requestAnimationFrame(() => {
@@ -191,6 +184,85 @@ export function BugCodeStage({
       ta.setSelectionRange(startPos, endPos);
     });
   };
+
+  // Power-user keyboard navigation between findings in Inspect mode
+  useEffect(() => {
+    if (stageMode !== 'inspect' || findings.length === 0) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      const target = e.target as HTMLElement | null;
+      if (isEditableTargetElement(target)) {
+        if (e.key === 'Escape' && activeFindingId) {
+          target?.blur();
+          onSelectFinding(null);
+        }
+        return;
+      }
+
+      const key = e.key;
+      const lower = key.toLowerCase();
+
+      if (key === 'Escape' && activeFindingId) {
+        e.preventDefault();
+        onSelectFinding(null);
+        return;
+      }
+
+      if (
+        lower === 'n' ||
+        lower === 'j' ||
+        key === 'ArrowDown' ||
+        key === 'ArrowRight'
+      ) {
+        e.preventDefault();
+        const nextId = getAdjacentFindingId(findings, activeFindingId, 'next');
+        if (nextId) onSelectFinding(nextId);
+        return;
+      }
+
+      if (
+        lower === 'p' ||
+        lower === 'k' ||
+        key === 'ArrowUp' ||
+        key === 'ArrowLeft'
+      ) {
+        e.preventDefault();
+        const prevId = getAdjacentFindingId(findings, activeFindingId, 'prev');
+        if (prevId) onSelectFinding(prevId);
+        return;
+      }
+
+      if (
+        lower === 'f' &&
+        activeFinding &&
+        activeFinding.canAutoFix &&
+        activeFinding.suggestedReplacement !== null &&
+        !resolvedFindingIds.has(activeFinding.id)
+      ) {
+        e.preventDefault();
+        onApplyFix(activeFinding);
+        return;
+      }
+
+      if (lower === 'e') {
+        e.preventDefault();
+        handleJumpToEditLine(activeFinding?.line ?? 1);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    stageMode,
+    findings,
+    activeFindingId,
+    activeFinding,
+    resolvedFindingIds,
+    onSelectFinding,
+    onApplyFix,
+  ]);
 
   const handleDrop = (e: React.DragEvent<HTMLElement>) => {
     e.preventDefault();
@@ -338,11 +410,25 @@ export function BugCodeStage({
               );
             })}
           </div>
-          {activeFinding && (
-            <span className="font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
-              Viewing bug {activeIndex + 1} of {findings.length}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+            <span>
+              Keys: <strong className="font-semibold text-slate-700 dark:text-slate-200">n</strong> / <strong className="font-semibold text-slate-700 dark:text-slate-200">&darr;</strong> next
+              {' · '}
+              <strong className="font-semibold text-slate-700 dark:text-slate-200">p</strong> / <strong className="font-semibold text-slate-700 dark:text-slate-200">&uarr;</strong> prev
+              {' · '}
+              <strong className="font-semibold text-slate-700 dark:text-slate-200">f</strong> apply fix
+              {' · '}
+              <strong className="font-semibold text-slate-700 dark:text-slate-200">esc</strong> close
             </span>
-          )}
+            {activeFinding && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="text-slate-700 dark:text-slate-200 font-medium">
+                  Viewing bug {activeIndex + 1} of {findings.length}
+                </span>
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -537,6 +623,8 @@ export function BugCodeStage({
                                 type="button"
                                 onClick={() => onSelectFinding(null)}
                                 aria-label="Close bug popup"
+                                aria-keyshortcuts="Escape"
+                                title="Close popup (Esc)"
                                 className="inline-flex items-center justify-center w-7 h-7 rounded text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white/70 dark:hover:bg-slate-800 cursor-pointer"
                               >
                                 <X className="w-4 h-4" aria-hidden="true" />
@@ -624,6 +712,8 @@ export function BugCodeStage({
                                       type="button"
                                       disabled={popResolved}
                                       onClick={() => onApplyFix(anchoredFinding)}
+                                      aria-keyshortcuts="f"
+                                      title="Apply fix to line (f)"
                                       className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-[#15803D] hover:bg-[#166534] disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:text-slate-600 dark:disabled:text-slate-400 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed"
                                     >
                                       <Wand2 className="w-3.5 h-3.5" aria-hidden="true" />
@@ -636,6 +726,8 @@ export function BugCodeStage({
                                 <button
                                   type="button"
                                   onClick={() => handleJumpToEditLine(anchoredFinding.line)}
+                                  aria-keyshortcuts="e"
+                                  title="Edit this line manually (e)"
                                   className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                                 >
                                   <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
@@ -649,10 +741,15 @@ export function BugCodeStage({
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      const prevIdx =
-                                        (activeIndex - 1 + findings.length) % findings.length;
-                                      onSelectFinding(findings[prevIdx].id);
+                                      const prevId = getAdjacentFindingId(
+                                        findings,
+                                        activeFindingId,
+                                        'prev'
+                                      );
+                                      if (prevId) onSelectFinding(prevId);
                                     }}
+                                    aria-keyshortcuts="p k ArrowUp ArrowLeft"
+                                    title="Previous bug (p or ↑)"
                                     className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors cursor-pointer"
                                   >
                                     <ChevronLeft className="w-3.5 h-3.5" aria-hidden="true" />
@@ -664,9 +761,15 @@ export function BugCodeStage({
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      const nextIdx = (activeIndex + 1) % findings.length;
-                                      onSelectFinding(findings[nextIdx].id);
+                                      const nextId = getAdjacentFindingId(
+                                        findings,
+                                        activeFindingId,
+                                        'next'
+                                      );
+                                      if (nextId) onSelectFinding(nextId);
                                     }}
+                                    aria-keyshortcuts="n j ArrowDown ArrowRight"
+                                    title="Next bug (n or ↓)"
                                     className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors cursor-pointer"
                                   >
                                     <span>Next</span>
