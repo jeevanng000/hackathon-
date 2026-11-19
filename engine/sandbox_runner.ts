@@ -257,11 +257,14 @@ export const executionSemaphore = new ConcurrencySemaphore();
  * Creates a dedicated isolated temporary directory accessible by the sandbox user (`nobody`).
  */
 export async function createSandboxTempDir(prefix: string): Promise<string> {
-  const tmpdir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const safePrefix = prefix.replace(/[^A-Za-z0-9_-]/g, '_') || 'autopatch_sbx_';
+  const tmpdir = await fs.mkdtemp(path.join(os.tmpdir(), safePrefix));
   const probe = probeHostIsolation();
-  await fs.chmod(tmpdir, 0o755);
   if (probe.canDropToNobody) {
     await fs.chown(tmpdir, probe.nobodyUid, probe.nobodyGid);
+    await fs.chmod(tmpdir, 0o700);
+  } else {
+    await fs.chmod(tmpdir, 0o755);
   }
   return tmpdir;
 }
@@ -275,9 +278,15 @@ export async function writeSandboxFile(
   content: string
 ): Promise<string> {
   const safeBase = path.basename(relFilename);
+  if (!safeBase || safeBase === '.' || safeBase === '..' || safeBase.includes('\0')) {
+    throw new Error('Disallowed sandbox filename.');
+  }
   const fullPath = path.join(tmpdir, safeBase);
-  await fs.writeFile(fullPath, content, { encoding: 'utf-8', mode: 0o644 });
   const probe = probeHostIsolation();
+  await fs.writeFile(fullPath, content, {
+    encoding: 'utf-8',
+    mode: probe.canDropToNobody ? 0o600 : 0o644,
+  });
   if (probe.canDropToNobody) {
     await fs.chown(fullPath, probe.nobodyUid, probe.nobodyGid).catch(() => {});
   }
@@ -291,6 +300,22 @@ export async function writeSandboxFile(
  *
  * Fails closed when OS isolation is unavailable.
  */
+const ALLOWED_SANDBOX_BINARIES = new Set(['python3', 'node', 'gcc', 'g++', 'bash']);
+
+function isInsideTmpdir(dirPath: string): boolean {
+  const resolvedTmp = path.resolve(os.tmpdir());
+  const resolvedDir = path.resolve(dirPath);
+  return resolvedDir.startsWith(resolvedTmp + path.sep);
+}
+
+function isAllowedSandboxCommand(cmd: string, cwd: string): boolean {
+  if (!cmd || cmd.includes('\0')) return false;
+  if (ALLOWED_SANDBOX_BINARIES.has(cmd)) return true;
+  // Allow compiled native test binary strictly inside the sandbox temp directory
+  const expectedCompiledBin = path.join(path.resolve(cwd), 'sandbox_runner');
+  return path.resolve(cmd) === expectedCompiledBin && isInsideTmpdir(cwd);
+}
+
 export async function runInIsolatedSandbox(
   cmd: string,
   args: string[],
@@ -299,6 +324,19 @@ export async function runInIsolatedSandbox(
   const cfg = loadSandboxConfig();
   const probe = probeHostIsolation();
   const t0 = performance.now();
+
+  if (!isInsideTmpdir(opts.cwd) || !isAllowedSandboxCommand(cmd, opts.cwd) || args.some((a) => typeof a !== 'string' || a.includes('\0'))) {
+    return {
+      stdout: '',
+      stderr: 'Disallowed sandbox command, working directory, or argument (fail-closed policy active).',
+      code: 126,
+      timedOut: false,
+      outputTruncated: false,
+      durationMs: Number((performance.now() - t0).toFixed(2)),
+      executionUnavailable: true,
+      unavailableReason: 'Rejected disallowed sandbox binary or working directory.',
+    };
+  }
 
   if (!cfg.allowUntrustedExec || !probe.hasNamespaceIsolation) {
     return {
@@ -473,6 +511,7 @@ export async function runInIsolatedSandbox(
         finish(exitCode);
       });
 
+      child.stdin?.on('error', () => {});
       if (opts.stdinData !== undefined) {
         child.stdin?.write(opts.stdinData);
       }

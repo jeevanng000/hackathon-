@@ -40,17 +40,28 @@ function computeRecordHash(
     prevEntryHash,
     id: record.id,
     timestamp: record.timestamp,
+    projectId: record.projectId ?? null,
     filename: record.filename,
     line: record.line,
     bugType: record.bugType,
     ruleId: record.ruleId,
     confidence: record.confidence,
+    baselinePassed: record.baselinePassed,
+    baselineTotal: record.baselineTotal,
+    sandboxPassed: record.sandboxPassed,
+    sandboxTotal: record.sandboxTotal,
+    linesAdded: record.linesAdded,
+    linesRemoved: record.linesRemoved,
     sandboxVerdict: record.sandboxVerdict,
     verificationStatus: record.verificationStatus ?? null,
     decision: record.decision,
     originalSourceHash: record.originalSourceHash ?? null,
     modifiedSourceHash: record.modifiedSourceHash ?? null,
     overrideReason: record.overrideReason ?? null,
+    patchDiff: record.patchDiff ?? null,
+    developerApproval: record.developerApproval ?? null,
+    findingId: record.findingId ?? null,
+    summary: record.summary,
   });
   return crypto.createHash('sha256').update(canonical, 'utf-8').digest('hex');
 }
@@ -67,6 +78,7 @@ export class AppendOnlyFileAuditStore implements BackendAuditStore {
   private lastHash = 'GENESIS';
   private loaded = false;
   private cache: BackendAuditRecord[] = [];
+  private corruptedLineIndices: number[] = [];
 
   constructor(filePath: string) {
     this.filePath = path.resolve(filePath);
@@ -74,6 +86,7 @@ export class AppendOnlyFileAuditStore implements BackendAuditStore {
 
   private async ensureLoaded(): Promise<void> {
     if (this.loaded) return;
+    this.corruptedLineIndices = [];
     try {
       const raw = await fs.readFile(this.filePath, 'utf-8');
       const lines = raw
@@ -81,11 +94,22 @@ export class AppendOnlyFileAuditStore implements BackendAuditStore {
         .map((l) => l.trim())
         .filter(Boolean);
       const parsed: BackendAuditRecord[] = [];
-      for (const line of lines) {
+      for (let idx = 0; idx < lines.length; idx++) {
         try {
-          parsed.push(JSON.parse(line) as BackendAuditRecord);
+          const item = JSON.parse(lines[idx]) as unknown;
+          if (
+            !item ||
+            typeof item !== 'object' ||
+            Array.isArray(item) ||
+            typeof (item as BackendAuditRecord).entryHash !== 'string' ||
+            typeof (item as BackendAuditRecord).id !== 'string'
+          ) {
+            this.corruptedLineIndices.push(idx);
+            continue;
+          }
+          parsed.push(item as BackendAuditRecord);
         } catch {
-          // Ignore corrupted partial line
+          this.corruptedLineIndices.push(idx);
         }
       }
       this.cache = parsed;
@@ -112,7 +136,7 @@ export class AppendOnlyFileAuditStore implements BackendAuditStore {
       const entryHash = computeRecordHash(base, prevEntryHash);
       const fullRecord: BackendAuditRecord = { ...base, entryHash };
 
-      await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+      await fs.mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
       await fs.appendFile(this.filePath, `${JSON.stringify(fullRecord)}\n`, {
         encoding: 'utf-8',
         mode: 0o600,
@@ -140,6 +164,13 @@ export class AppendOnlyFileAuditStore implements BackendAuditStore {
 
   async verifyChain(): Promise<{ valid: boolean; totalRecords: number; brokenAtIndex?: number }> {
     await this.ensureLoaded();
+    if (this.corruptedLineIndices.length > 0) {
+      return {
+        valid: false,
+        totalRecords: this.cache.length + this.corruptedLineIndices.length,
+        brokenAtIndex: this.corruptedLineIndices[0],
+      };
+    }
     let expectedPrev = 'GENESIS';
     for (let i = 0; i < this.cache.length; i++) {
       const rec = this.cache[i];

@@ -1032,7 +1032,9 @@ def run_sandbox_tests(
                 pass
 
     try:
-        os.chmod(tmpdir, 0o755)
+        dir_mode = 0o700 if probe["canDropToNobody"] else 0o755
+        file_mode = 0o600 if probe["canDropToNobody"] else 0o644
+        os.chmod(tmpdir, dir_mode)
         src_path = os.path.join(tmpdir, safe_src)
         test_path = os.path.join(tmpdir, safe_test)
         runner_path = os.path.join(tmpdir, "_autopatch_runner.py")
@@ -1040,7 +1042,7 @@ def run_sandbox_tests(
         for pth, content in ((src_path, source_code), (test_path, test_code), (runner_path, SANDBOX_RUNNER_SCRIPT)):
             with open(pth, "w", encoding="utf-8") as f:
                 f.write(content)
-            os.chmod(pth, 0o644)
+            os.chmod(pth, file_mode)
 
         if probe["canDropToNobody"]:
             os.chown(tmpdir, NOBODY_UID, NOBODY_GID)
@@ -2333,6 +2335,8 @@ def synthesize_python_validation_tests(
     so the engine honestly requires human-written tests.
     """
     mod_name = os.path.splitext(os.path.basename(filename))[0]
+    if not mod_name.isidentifier():
+        return None
     funcs = [f["name"] for f in ast_report.get("functions", [])]
     lines: List[str] = []
 
@@ -2414,13 +2418,27 @@ def compute_canonical_verification_status(
     return "HUMAN_REVIEW_REQUIRED"
 
 
+def _safe_str(val: Any, default: str = "") -> str:
+    return val if isinstance(val, str) else default
+
+
+def _safe_timeout(val: Any, default: float = 2.0) -> float:
+    try:
+        num = float(val) if val is not None else default
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(num):
+        return default
+    return max(0.5, min(5.0, num))
+
+
 def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
-    filename = sanitize_filename(req.get("filename", "module.py"), "module.py")
-    test_filename = sanitize_filename(req.get("testFilename", f"test_{filename}"), f"test_{filename}")
-    source_code = req.get("sourceCode", "")
-    test_code = (req.get("testCode") or "").strip()
-    bug_context = (req.get("bugContext") or "").strip()
-    timeout_sec = max(0.5, min(5.0, float(req.get("timeoutSeconds", 2.0))))
+    filename = sanitize_filename(_safe_str(req.get("filename"), "module.py"), "module.py")
+    test_filename = sanitize_filename(_safe_str(req.get("testFilename"), f"test_{filename}"), f"test_{filename}")
+    source_code = _safe_str(req.get("sourceCode"), "")
+    test_code = _safe_str(req.get("testCode"), "").strip()
+    bug_context = _safe_str(req.get("bugContext"), "").strip()
+    timeout_sec = _safe_timeout(req.get("timeoutSeconds"), 2.0)
     sandbox_isolation = get_python_sandbox_isolation_info()
     original_source_hash = hashlib.sha256(source_code.encode("utf-8")).hexdigest()
 
@@ -2529,12 +2547,12 @@ def handle_analyze(req: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:
-    filename = sanitize_filename(req.get("filename", "module.py"), "module.py")
-    test_filename = sanitize_filename(req.get("testFilename", f"test_{filename}"), f"test_{filename}")
-    original_code = req.get("originalCode", "")
-    candidate_code = req.get("candidateCode", "")
-    test_code = (req.get("testCode") or "").strip()
-    timeout_sec = max(0.5, min(5.0, float(req.get("timeoutSeconds", 2.0))))
+    filename = sanitize_filename(_safe_str(req.get("filename"), "module.py"), "module.py")
+    test_filename = sanitize_filename(_safe_str(req.get("testFilename"), f"test_{filename}"), f"test_{filename}")
+    original_code = _safe_str(req.get("originalCode"), "")
+    candidate_code = _safe_str(req.get("candidateCode"), "")
+    test_code = _safe_str(req.get("testCode"), "").strip()
+    timeout_sec = _safe_timeout(req.get("timeoutSeconds"), 2.0)
     sandbox_isolation = get_python_sandbox_isolation_info()
     original_source_hash = hashlib.sha256(original_code.encode("utf-8")).hexdigest()
 
@@ -2635,21 +2653,37 @@ def handle_validate_manual(req: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+MAX_CLI_STDIN_BYTES = 2 * 1024 * 1024
+
+
 def main() -> None:
-    raw = sys.stdin.read()
+    raw = sys.stdin.read(MAX_CLI_STDIN_BYTES + 1)
+    if len(raw.encode("utf-8")) > MAX_CLI_STDIN_BYTES:
+        print(json.dumps({"error": "Input payload exceeds maximum allowed size."}))
+        sys.exit(1)
     try:
         req = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        print(json.dumps({"error": f"Invalid JSON payload: {exc}"}))
+    except json.JSONDecodeError:
+        print(json.dumps({"error": "Invalid JSON payload."}))
         sys.exit(1)
 
-    action = req.get("action", "analyze")
-    if action == "validate":
-        res = handle_validate_manual(req)
-    else:
-        res = handle_analyze(req)
+    if not isinstance(req, dict):
+        print(json.dumps({"error": "Request payload must be a JSON object."}))
+        sys.exit(1)
 
-    print(json.dumps(res))
+    try:
+        action = req.get("action", "analyze")
+        if action == "validate":
+            res = handle_validate_manual(req)
+        elif action == "analyze":
+            res = handle_analyze(req)
+        else:
+            print(json.dumps({"error": "Unsupported engine action."}))
+            sys.exit(1)
+        print(json.dumps(res))
+    except Exception:
+        print(json.dumps({"error": "Python engine encountered an internal processing error."}))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

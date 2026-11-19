@@ -66,6 +66,10 @@ function sanitizeFileBase(name: string, fallback: string): string {
   return cleaned || fallback;
 }
 
+function escapeRegex(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Strips single-line and multi-line comments and string literals (preserving line breaks)
  * so heuristic scanners for languages without a local compiler NEVER flag text inside
@@ -938,7 +942,7 @@ async function runJsTsSandbox(
 
       const baseNoExt = safeSrc.replace(/\.[^.]+$/, '');
       const rewrittenTest = testCode.replace(
-        new RegExp(`(['"])(\\.\\/${baseNoExt})(\\.(?:ts|tsx|js|jsx|mjs))?\\1`, 'g'),
+        new RegExp(`(['"])(\\.\\/${escapeRegex(baseNoExt)})(\\.(?:ts|tsx|js|jsx|mjs))?\\1`, 'g'),
         `$1./${jsSrcName}$1`
       );
       const testRes = await transform(rewrittenTest, {
@@ -1006,7 +1010,7 @@ for (const [name, fn] of entries) {
   } catch (err) {
     globalThis.__AP_SET__ = null;
     const stack = String(err?.stack || err);
-    const lineMatch = stack.match(/${jsSrcName.replace(/\./g, '\\.')}:(\\d+)/);
+    const lineMatch = stack.match(/${escapeRegex(jsSrcName)}:(\\d+)/);
     const genLine = lineMatch ? Math.max(1, Number(lineMatch[1]) - 1) : null;
     const errLine = genLine ? (LINE_MAP[String(genLine)] || genLine) : null;
     if (errLine) hitSet.add(errLine);
@@ -1206,7 +1210,7 @@ async function runCCppSandbox(
     }
 
     if (comp.code !== 0) {
-      const errLineMatch = comp.stderr.match(new RegExp(`${safeSrc.replace(/\./g, '\\.')}:(\\d+):`));
+      const errLineMatch = comp.stderr.match(new RegExp(`${escapeRegex(safeSrc)}:(\\d+):`));
       const errLine = errLineMatch ? Number(errLineMatch[1]) : 1;
       const firstErr =
         comp.stderr
@@ -1926,7 +1930,7 @@ async function generateMultiLangPatch(params: {
       const orig = repaired[idx];
       const nullCheck = language === 'ruby' ? `${varName}` : `${varName} != null`;
       const updated = orig.replace(
-        new RegExp(`^(\\s*if\\s*\\()\\s*(${varName}\\b)`),
+        new RegExp(`^(\\s*if\\s*\\()\\s*(${escapeRegex(varName)}\\b)`),
         `$1${nullCheck} && $2`
       );
       if (updated !== orig) {

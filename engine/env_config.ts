@@ -137,7 +137,7 @@ export function loadAppEnvConfig(): AppEnvConfig {
     disableHmr: readBool('DISABLE_HMR', true),
     enableLocalHmr: readBool('ENABLE_LOCAL_HMR', false),
     apiKeyAuthToken: readOptionalSecret('AUTOPATCH_API_KEY'),
-    auditLogPath: readString('AUDIT_LOG_PATH', '.autopatch-data/audit-ledger.ndjson'),
+    auditLogPath: readString('AUDIT_LOG_PATH', '.autopatch-data/audit-ledger.ndjson').replace(/\0/g, ''),
     gemini: {
       apiKey: geminiApiKey,
       configured: Boolean(geminiApiKey),
@@ -278,12 +278,22 @@ export function redactSecrets(input: string): string {
   let out = input;
   for (const envName of ['GEMINI_API_KEY', 'NEO4J_PASSWORD', 'AUTOPATCH_API_KEY']) {
     const val = process.env[envName]?.trim();
-    if (val && val.length >= 6) {
+    if (val && val.length >= 4) {
       out = out.split(val).join('[REDACTED]');
     }
   }
   out = out.replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED_API_KEY]');
+  out = out.replace(/sk-[0-9A-Za-z_-]{16,}/g, '[REDACTED_API_KEY]');
+  out = out.replace(/gh[pousr]_[0-9A-Za-z]{20,}/g, '[REDACTED_TOKEN]');
+  out = out.replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_KEY]');
+  out = out.replace(
+    /((?:neo4j\+s|neo4j\+ssc|neo4j|bolt\+s|bolt\+ssc|bolt|postgres|postgresql|mysql|mongodb\+srv|mongodb|https?):\/\/)[^:@\s/]+:[^@\s]+@/gi,
+    '$1[REDACTED]@'
+  );
   out = out.replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [REDACTED]');
-  out = out.replace(/(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*['"]?[^\s'",;]+/gi, '$1=[REDACTED]');
+  out = out.replace(
+    /(password|passwd|secret|token|api[_-]?key|x-api-key|authorization)\s*[:=]\s*['"]?[^\s'",;]+/gi,
+    '$1=[REDACTED]'
+  );
   return out;
 }

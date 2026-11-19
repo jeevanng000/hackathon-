@@ -265,11 +265,17 @@ export class ServerAnalysisStore {
 }
 
 export function getClientIp(req: Request): string {
-  const fwd = req.headers['x-forwarded-for'];
-  if (typeof fwd === 'string' && fwd.trim()) {
-    return fwd.split(',')[0].trim();
+  // Only honor X-Forwarded-For when explicitly running behind a trusted reverse proxy
+  if (process.env.TRUST_PROXY === 'true' || process.env.TRUST_PROXY === '1') {
+    const fwd = req.headers['x-forwarded-for'];
+    if (typeof fwd === 'string' && fwd.trim()) {
+      const candidate = fwd.split(',')[0].trim();
+      if (/^[0-9a-fA-F:.]{2,45}$/.test(candidate)) {
+        return candidate;
+      }
+    }
   }
-  return req.ip || req.socket?.remoteAddress || 'unknown';
+  return req.socket?.remoteAddress || req.ip || 'unknown';
 }
 
 export function requestIdMiddleware(req: Request, res: Response, next: NextFunction): void {
@@ -342,10 +348,36 @@ export function validateEntityId(
   return { ok: true, id: trimmed };
 }
 
+export function sanitizeSingleLineText(raw: string, maxLen: number): string {
+  return raw.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, maxLen);
+}
+
+export function validateSafeAuditId(
+  raw: unknown
+): { ok: true; id: string } | { ok: false; error: string } {
+  if (raw === undefined || raw === null || raw === '') {
+    return { ok: true, id: '' };
+  }
+  if (typeof raw !== 'string') {
+    return { ok: false, error: 'audit id must be a string.' };
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { ok: true, id: '' };
+  }
+  if (trimmed.length > 80 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(trimmed)) {
+    return {
+      ok: false,
+      error: 'audit id must be 1-80 chars containing only letters, digits, ".", "_", ":", or "-".',
+    };
+  }
+  return { ok: true, id: trimmed };
+}
+
 /**
  * Optional API-key protection middleware for sensitive backend routes.
  * When AUTOPATCH_API_KEY is unset, requests proceed normally (preserves local dev / existing UI).
- * When AUTOPATCH_API_KEY is configured, enforces constant-time token comparison via
+ * When AUTOPATCH_API_KEY is configured, enforces strict constant-time SHA-256 digest comparison via
  * `Authorization: Bearer <token>` or `X-API-Key: <token>`.
  */
 export function apiKeyAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
@@ -364,9 +396,10 @@ export function apiKeyAuthMiddleware(req: Request, res: Response, next: NextFunc
     return;
   }
 
-  const a = Buffer.from(provided, 'utf-8');
-  const b = Buffer.from(expected, 'utf-8');
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+  // Hash both keys to fixed 32-byte digests so timingSafeEqual leaks zero length information
+  const aDigest = crypto.createHash('sha256').update(provided, 'utf-8').digest();
+  const bDigest = crypto.createHash('sha256').update(expected, 'utf-8').digest();
+  if (!crypto.timingSafeEqual(aDigest, bDigest)) {
     res.status(403).json({ error: 'Invalid API credentials.' });
     return;
   }

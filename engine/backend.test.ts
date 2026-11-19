@@ -623,3 +623,102 @@ test('Rate limiter returns HTTP 429 with Retry-After when MAX_REQUESTS_PER_MINUT
     await close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// 7. BACKEND SECURITY HARDENING REGRESSION TESTS
+// ---------------------------------------------------------------------------
+
+test('Sandbox runner rejects disallowed binaries and working directories outside os.tmpdir()', async () => {
+  const disallowedCmd = await runInIsolatedSandbox('cat', ['/etc/passwd'], {
+    cwd: os.tmpdir(),
+    timeoutMs: 1000,
+    mode: 'run',
+  });
+  assert.equal(disallowedCmd.executionUnavailable, true);
+  assert.equal(disallowedCmd.code, 126);
+
+  const disallowedCwd = await runInIsolatedSandbox('node', ['-e', 'console.log(1)'], {
+    cwd: process.cwd(),
+    timeoutMs: 1000,
+    mode: 'node',
+  });
+  assert.equal(disallowedCwd.executionUnavailable, true);
+  assert.equal(disallowedCwd.code, 126);
+});
+
+test('HTTP API enforces Content-Type 415, API 404 JSON catch-all, strict /api/audit validation, and XFF anti-spoofing', async () => {
+  const prevLimit = process.env.MAX_REQUESTS_PER_MINUTE;
+  const prevTrustProxy = process.env.TRUST_PROXY;
+  process.env.MAX_REQUESTS_PER_MINUTE = '5';
+  delete process.env.TRUST_PROXY;
+
+  const { baseUrl, close } = await startTestHttpServer();
+  try {
+    // 1. Security headers present, X-Frame-Options still absent for iFrame compatibility
+    const healthRes = await fetch(`${baseUrl}/api/health`);
+    assert.equal(healthRes.headers.get('x-dns-prefetch-control'), 'off');
+    assert.equal(healthRes.headers.get('x-permitted-cross-domain-policies'), 'none');
+    assert.equal(healthRes.headers.get('x-frame-options'), null);
+
+    // 2. Unknown /api route returns JSON 404 (not SPA HTML)
+    const notFoundRes = await fetch(`${baseUrl}/api/does-not-exist`);
+    assert.equal(notFoundRes.status, 404);
+    const nfJson = (await notFoundRes.json()) as { error: string };
+    assert.ok(nfJson.error);
+
+    // 3. Non-JSON Content-Type on POST /api/* returns 415
+    const formPostRes = await fetch(`${baseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: 'not json',
+    });
+    assert.equal(formPostRes.status, 415);
+
+    // 4. Strict /api/audit validation rejects invalid id, decision, verificationStatus
+    const badAuditId = await fetch(`${baseUrl}/api/audit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'bad/id\nline', filename: 'a.py', decision: 'accepted' }),
+    });
+    assert.equal(badAuditId.status, 400);
+
+    const badAuditDecision = await fetch(`${baseUrl}/api/audit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: 'a.py', decision: 'malicious_decision' }),
+    });
+    assert.equal(badAuditDecision.status, 400);
+
+    const badAuditStatus = await fetch(`${baseUrl}/api/audit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: 'a.py', decision: 'accepted', verificationStatus: 'FORGED_STATUS' }),
+    });
+    assert.equal(badAuditStatus.status, 400);
+
+    // 5. Spoofing X-Forwarded-For does not bypass rate limiter when TRUST_PROXY is unset
+    let hit429 = false;
+    for (let i = 0; i < 8; i++) {
+      const r = await fetch(`${baseUrl}/api/audit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': `203.0.113.${i + 1}`,
+        },
+        body: JSON.stringify({ filename: 'a.py', decision: 'accepted' }),
+      });
+      if (r.status === 429) {
+        hit429 = true;
+        break;
+      }
+    }
+    assert.equal(hit429, true, 'Spoofed X-Forwarded-For must not bypass per-IP rate limiting');
+  } finally {
+    if (prevLimit === undefined) delete process.env.MAX_REQUESTS_PER_MINUTE;
+    else process.env.MAX_REQUESTS_PER_MINUTE = prevLimit;
+    if (prevTrustProxy === undefined) delete process.env.TRUST_PROXY;
+    else process.env.TRUST_PROXY = prevTrustProxy;
+    await close();
+  }
+});
+

@@ -51,11 +51,13 @@ import {
   loadSecurityLimits,
   logStructured,
   requestIdMiddleware,
+  sanitizeSingleLineText,
   ServerAnalysisStore,
   SlidingWindowRateLimiter,
   validateAndResolveLanguage,
   validateEntityId,
   validateProjectId,
+  validateSafeAuditId,
   validateSafeFilename,
   validateTargetLine,
   validateTimeoutSeconds,
@@ -167,9 +169,14 @@ async function runPythonEngine(payload: EnginePayload): Promise<AnalysisResponse
       }, 14000);
 
       child.stdout?.on('data', (chunk: Buffer) => {
-        if (stdoutBytes < maxEngineOut) {
+        if (stdoutBytes + chunk.length <= maxEngineOut) {
           stdoutChunks.push(chunk);
           stdoutBytes += chunk.length;
+        } else if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          killTree();
+          reject(new Error('Python analysis engine output exceeded buffer limit.'));
         }
       });
 
@@ -205,6 +212,7 @@ async function runPythonEngine(payload: EnginePayload): Promise<AnalysisResponse
         }
       });
 
+      child.stdin?.on('error', () => {});
       child.stdin?.write(JSON.stringify(payload));
       child.stdin?.end();
     });
@@ -254,6 +262,8 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=(self)');
+    res.setHeader('X-DNS-Prefetch-Control', 'off');
+    res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
     if (req.path.startsWith('/api/')) {
       res.setHeader('Cache-Control', 'no-store');
     }
@@ -303,6 +313,15 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       return;
     }
     apiKeyAuthMiddleware(req, res, next);
+  });
+
+  // Require application/json Content-Type on mutating API requests to prevent simple form/CORS CSRF posts
+  app.post('/api/*', (req, res, next) => {
+    if (!req.is('application/json')) {
+      res.status(415).json({ error: 'Content-Type must be application/json.' });
+      return;
+    }
+    next();
   });
 
   // ---------------------------------------------------------------------------
@@ -429,7 +448,10 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
         durationMs: Number((performance.now() - t0).toFixed(1)),
       });
       res.status(status).json({
-        error: redactSecrets(typedErr.message || 'AutoPatch AI workflow failed.'),
+        error:
+          status >= 500 && status !== 502 && status !== 503
+            ? 'AutoPatch AI workflow failed.'
+            : redactSecrets(typedErr.message || 'AutoPatch AI workflow failed.'),
         code,
       });
     }
@@ -446,8 +468,12 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
     if (!checkRateLimit(req, res, 'transcribe', limits.maxAiRequestsPerMinute)) return;
 
     const { audioDataUrl, mimeType, bugContext } = req.body ?? {};
-    if (typeof audioDataUrl !== 'string' || !audioDataUrl.includes(',')) {
+    if (typeof audioDataUrl !== 'string' || !/^data:[^;,]+;base64,/i.test(audioDataUrl)) {
       res.status(400).json({ error: 'Valid base64 audio data URL is required.' });
+      return;
+    }
+    if (bugContext !== undefined && bugContext !== null && typeof bugContext !== 'string') {
+      res.status(400).json({ error: 'bugContext must be a string when provided.' });
       return;
     }
 
@@ -468,7 +494,7 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       const result = await transcribeVoiceNote({
         audioBase64: base64Data,
         mimeType: resolvedMime,
-        bugContext: typeof bugContext === 'string' ? bugContext.slice(0, 400) : undefined,
+        bugContext: typeof bugContext === 'string' ? sanitizeSingleLineText(bugContext, 400) : undefined,
         maxAudioSizeBytes: limits.maxAudioSizeBytes,
       });
       logStructured('info', 'api.transcribe_note', {
@@ -863,8 +889,8 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
               testCode: safeTestCode,
               _trustedServerBaseline: trustedBaseline,
               targetLine: lineCheck.value,
-              bugType: typeof bugType === 'string' ? bugType.slice(0, 80) : undefined,
-              rootCause: typeof rootCause === 'string' ? rootCause.slice(0, 500) : undefined,
+              bugType: typeof bugType === 'string' ? sanitizeSingleLineText(bugType, 80) : undefined,
+              rootCause: typeof rootCause === 'string' ? sanitizeSingleLineText(rootCause, 500) : undefined,
               timeoutSeconds: clampedTimeout,
             })
           : await runMultiLangAnalysis({
@@ -877,8 +903,8 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
               testCode: safeTestCode,
               _trustedServerBaseline: trustedBaseline,
               targetLine: lineCheck.value,
-              bugType: typeof bugType === 'string' ? bugType.slice(0, 80) : undefined,
-              rootCause: typeof rootCause === 'string' ? rootCause.slice(0, 500) : undefined,
+              bugType: typeof bugType === 'string' ? sanitizeSingleLineText(bugType, 80) : undefined,
+              rootCause: typeof rootCause === 'string' ? sanitizeSingleLineText(rootCause, 500) : undefined,
               timeoutSeconds: clampedTimeout,
             });
 
@@ -900,11 +926,11 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
                 approved: Boolean((developerApproval as { approved?: unknown }).approved),
                 approver:
                   typeof (developerApproval as { approver?: unknown }).approver === 'string'
-                    ? (developerApproval as { approver: string }).approver.slice(0, 80)
+                    ? sanitizeSingleLineText((developerApproval as { approver: string }).approver, 80)
                     : undefined,
                 reason:
                   typeof (developerApproval as { reason?: unknown }).reason === 'string'
-                    ? (developerApproval as { reason: string }).reason.slice(0, 300)
+                    ? sanitizeSingleLineText((developerApproval as { reason: string }).reason, 300)
                     : undefined,
                 recordedAt: new Date().toISOString(),
               }
@@ -1026,7 +1052,16 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
 
   app.post('/api/audit', standardJsonParser, async (req, res) => {
     if (!checkRateLimit(req, res, 'api', limits.maxRequestsPerMinute)) return;
-    const body = req.body ?? {};
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Audit payload must be a JSON object.' });
+      return;
+    }
+    const auditIdCheck = validateSafeAuditId(body.id);
+    if (!auditIdCheck.ok) {
+      res.status(400).json({ error: auditIdCheck.error });
+      return;
+    }
     const srcNameCheck = validateSafeFilename(body.filename, 'module.py', 'filename');
     if (!srcNameCheck.ok) {
       res.status(400).json({ error: srcNameCheck.error });
@@ -1039,25 +1074,57 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
     }
 
     const allowedDecisions = new Set(['accepted', 'rejected', 'override', 'blocked']);
-    const decision = (allowedDecisions.has(body.decision) ? body.decision : 'override') as
-      | 'accepted'
-      | 'rejected'
-      | 'override'
-      | 'blocked';
+    if (body.decision !== undefined && (typeof body.decision !== 'string' || !allowedDecisions.has(body.decision))) {
+      res.status(400).json({ error: 'Invalid audit decision value.' });
+      return;
+    }
+    const decision = (body.decision ?? 'override') as 'accepted' | 'rejected' | 'override' | 'blocked';
+
     const allowedVerdicts = new Set(['verified', 'blocked', 'already_passing']);
-    const sandboxVerdict = (allowedVerdicts.has(body.sandboxVerdict)
-      ? body.sandboxVerdict
-      : 'blocked') as 'verified' | 'blocked' | 'already_passing';
+    if (
+      body.sandboxVerdict !== undefined &&
+      (typeof body.sandboxVerdict !== 'string' || !allowedVerdicts.has(body.sandboxVerdict))
+    ) {
+      res.status(400).json({ error: 'Invalid sandboxVerdict value.' });
+      return;
+    }
+    const sandboxVerdict = (body.sandboxVerdict ?? 'blocked') as
+      | 'verified'
+      | 'blocked'
+      | 'already_passing';
+
+    const allowedVerificationStatuses = new Set([
+      'RUNTIME_VERIFIED',
+      'STATIC_ANALYSIS_PASSED',
+      'HUMAN_REVIEW_REQUIRED',
+      'VERIFICATION_UNAVAILABLE',
+      'FAILED',
+    ]);
+    if (
+      body.verificationStatus !== undefined &&
+      body.verificationStatus !== null &&
+      (typeof body.verificationStatus !== 'string' ||
+        !allowedVerificationStatuses.has(body.verificationStatus))
+    ) {
+      res.status(400).json({ error: 'Invalid verificationStatus value.' });
+      return;
+    }
 
     try {
       const record = await auditStore.append({
-        id: typeof body.id === 'string' && body.id.trim() ? body.id.trim().slice(0, 80) : '',
+        id: auditIdCheck.id,
         timestamp: new Date().toISOString(),
         projectId: projCheck.projectId,
         filename: srcNameCheck.filename,
         line: typeof body.line === 'number' && Number.isFinite(body.line) ? Math.round(body.line) : null,
-        bugType: typeof body.bugType === 'string' ? body.bugType.slice(0, 80) : 'ManualAudit',
-        ruleId: typeof body.ruleId === 'string' ? body.ruleId.slice(0, 80) : 'AUDIT_LOG',
+        bugType:
+          typeof body.bugType === 'string' && body.bugType.trim()
+            ? sanitizeSingleLineText(body.bugType, 80)
+            : 'ManualAudit',
+        ruleId:
+          typeof body.ruleId === 'string' && body.ruleId.trim()
+            ? sanitizeSingleLineText(body.ruleId, 80)
+            : 'AUDIT_LOG',
         confidence:
           typeof body.confidence === 'number' && Number.isFinite(body.confidence)
             ? Math.max(0, Math.min(100, Math.round(body.confidence)))
@@ -1088,33 +1155,41 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
             : 0,
         sandboxVerdict,
         verificationStatus:
-          typeof body.verificationStatus === 'string' ? body.verificationStatus : undefined,
+          typeof body.verificationStatus === 'string'
+            ? (body.verificationStatus as AnalysisResponse['verificationStatus'])
+            : undefined,
         decision,
         overrideReason:
-          typeof body.overrideReason === 'string' ? body.overrideReason.slice(0, 400) : undefined,
+          typeof body.overrideReason === 'string'
+            ? sanitizeSingleLineText(body.overrideReason, 400)
+            : undefined,
         originalSourceHash:
-          typeof body.originalSourceHash === 'string' ? body.originalSourceHash.slice(0, 128) : undefined,
+          typeof body.originalSourceHash === 'string' && /^[a-fA-F0-9]{64}$/.test(body.originalSourceHash.trim())
+            ? body.originalSourceHash.trim().toLowerCase()
+            : undefined,
         modifiedSourceHash:
-          typeof body.modifiedSourceHash === 'string' ? body.modifiedSourceHash.slice(0, 128) : undefined,
+          typeof body.modifiedSourceHash === 'string' && /^[a-fA-F0-9]{64}$/.test(body.modifiedSourceHash.trim())
+            ? body.modifiedSourceHash.trim().toLowerCase()
+            : undefined,
         patchDiff: typeof body.patchDiff === 'string' ? body.patchDiff.slice(0, 4000) : undefined,
         developerApproval:
-          body.developerApproval && typeof body.developerApproval === 'object'
+          body.developerApproval && typeof body.developerApproval === 'object' && !Array.isArray(body.developerApproval)
             ? {
                 approved: Boolean(body.developerApproval.approved),
                 approver:
                   typeof body.developerApproval.approver === 'string'
-                    ? body.developerApproval.approver.slice(0, 80)
+                    ? sanitizeSingleLineText(body.developerApproval.approver, 80)
                     : undefined,
                 reason:
                   typeof body.developerApproval.reason === 'string'
-                    ? body.developerApproval.reason.slice(0, 300)
+                    ? sanitizeSingleLineText(body.developerApproval.reason, 300)
                     : undefined,
                 recordedAt: new Date().toISOString(),
               }
             : undefined,
         summary:
           typeof body.summary === 'string' && body.summary.trim()
-            ? body.summary.trim().slice(0, 400)
+            ? sanitizeSingleLineText(body.summary, 400)
             : `Audit event (${decision}) for ${srcNameCheck.filename}`,
       });
       res.status(201).json(record);
@@ -1263,18 +1338,26 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       res.status(400).json({ error: idCheck.error });
       return;
     }
+    let safeType = 'Function';
+    if (targetType !== undefined && targetType !== null && targetType !== '') {
+      if (typeof targetType !== 'string' || !['Function', 'File', 'Class'].includes(targetType.trim())) {
+        res.status(400).json({ error: 'targetType must be Function, File, or Class.' });
+        return;
+      }
+      safeType = targetType.trim();
+    }
+    if (maxDepth !== undefined && (typeof maxDepth !== 'number' || !Number.isFinite(maxDepth))) {
+      res.status(400).json({ error: 'maxDepth must be a finite number.' });
+      return;
+    }
     if (!ensureGraphRagConfigured(res)) return;
-    const safeType =
-      typeof targetType === 'string' && ['Function', 'File', 'Class'].includes(targetType.trim())
-        ? targetType.trim()
-        : 'Function';
 
     try {
       const result = await analyzeEntityImpact({
         projectId: projCheck.projectId,
         targetType: safeType,
         targetId: idCheck.id,
-        maxDepth: typeof maxDepth === 'number' ? maxDepth : undefined,
+        maxDepth: typeof maxDepth === 'number' ? Math.max(1, Math.min(3, Math.round(maxDepth))) : undefined,
       });
       res.json(result);
     } catch (err) {
@@ -1299,13 +1382,17 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       res.status(400).json({ error: 'query is required for historical bug search.' });
       return;
     }
+    if (limit !== undefined && (typeof limit !== 'number' || !Number.isFinite(limit))) {
+      res.status(400).json({ error: 'limit must be a finite number.' });
+      return;
+    }
     if (!ensureGraphRagConfigured(res)) return;
 
     try {
       const result = await searchHistoricalBugs({
         projectId: projCheck.projectId,
-        query: query.trim().slice(0, 600),
-        limit: typeof limit === 'number' ? limit : undefined,
+        query: sanitizeSingleLineText(query, 600),
+        limit: typeof limit === 'number' ? Math.max(1, Math.min(25, Math.round(limit))) : undefined,
       });
       res.json(result);
     } catch (err) {
@@ -1330,14 +1417,22 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
       res.status(400).json({ error: 'question is required.' });
       return;
     }
+    if (maxDepth !== undefined && (typeof maxDepth !== 'number' || !Number.isFinite(maxDepth))) {
+      res.status(400).json({ error: 'maxDepth must be a finite number.' });
+      return;
+    }
+    if (maxNodes !== undefined && (typeof maxNodes !== 'number' || !Number.isFinite(maxNodes))) {
+      res.status(400).json({ error: 'maxNodes must be a finite number.' });
+      return;
+    }
     if (!ensureGraphRagConfigured(res)) return;
 
     try {
       const result = await answerGraphQuestion({
         projectId: projCheck.projectId,
-        question: question.trim().slice(0, 800),
-        maxDepth: typeof maxDepth === 'number' ? maxDepth : undefined,
-        maxNodes: typeof maxNodes === 'number' ? maxNodes : undefined,
+        question: sanitizeSingleLineText(question, 800),
+        maxDepth: typeof maxDepth === 'number' ? Math.max(1, Math.min(3, Math.round(maxDepth))) : undefined,
+        maxNodes: typeof maxNodes === 'number' ? Math.max(5, Math.min(200, Math.round(maxNodes))) : undefined,
       });
       res.json(result);
     } catch (err) {
@@ -1403,6 +1498,11 @@ export function createAutoPatchApp(options: CreateAppOptions = {}) {
     }
   });
 
+  // Explicit JSON 404 for unknown /api/* routes so they never fall through to Vite/SPA HTML
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'API endpoint not found.' });
+  });
+
   // Centralized Express error middleware (handles malformed JSON 400, oversized body 413, unexpected 500 cleanly without leaking stack traces or secrets)
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     const requestId = (req as Request & { requestId?: string }).requestId || 'unknown';
@@ -1446,6 +1546,9 @@ async function startServer() {
 
   const app = createAutoPatchApp();
   const server = http.createServer(app);
+  server.requestTimeout = 30_000;
+  server.headersTimeout = 10_000;
+  server.keepAliveTimeout = 5_000;
   const isProd = process.env.NODE_ENV === 'production';
   const distDir = path.resolve(__dirname, 'dist');
   let viteServer: { close: () => Promise<void> } | null = null;
@@ -1494,6 +1597,11 @@ async function startServer() {
   });
   process.once('SIGTERM', () => {
     void shutdown('SIGTERM');
+  });
+  process.on('unhandledRejection', (reason) => {
+    logStructured('error', 'process.unhandled_rejection', {
+      reason: redactSecrets(reason instanceof Error ? reason.message : String(reason)),
+    });
   });
 }
 

@@ -815,3 +815,106 @@ test('Live Neo4j AuraDB enforces idempotent duplicate ingestion, incremental upd
     await fs.rm(tmpDirB, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// 9. SECURITY HARDENING: SYMLINK ESCAPE, AUDIT CORRUPTION, URI REDACTION
+// ---------------------------------------------------------------------------
+
+test('discoverRepositoryFiles and extractSourceFile block symlink escapes and path traversal', async () => {
+  const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'autopatch_sym_repo_'));
+  const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'autopatch_sym_outside_'));
+  try {
+    await fs.writeFile(path.join(outsideDir, 'secret_leak.py'), 'SECRET = "top_secret_123"\n', 'utf-8');
+    await fs.writeFile(path.join(repoDir, 'legit.py'), 'def ok():\n    return 1\n', 'utf-8');
+    await fs.symlink(path.join(outsideDir, 'secret_leak.py'), path.join(repoDir, 'escaped.py'));
+
+    const files = await discoverRepositoryFiles(repoDir, 50);
+    assert.deepEqual(files, ['legit.py']);
+
+    await assert.rejects(() => extractSourceFile('sec-proj', repoDir, 'escaped.py'));
+    await assert.rejects(() => extractSourceFile('sec-proj', repoDir, '../outside.py'));
+  } finally {
+    await fs.rm(repoDir, { recursive: true, force: true });
+    await fs.rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test('AppendOnlyFileAuditStore detects tampering in approval/diff fields and corrupted NDJSON lines', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'autopatch_audit_sec_'));
+  const logPath = path.join(tmpDir, 'audit.ndjson');
+  try {
+    const store = new AppendOnlyFileAuditStore(logPath);
+    await store.append({
+      id: 'sec-1',
+      timestamp: '2026-11-19T00:00:00.000Z',
+      projectId: 'proj-sec',
+      filename: 'auth.py',
+      line: 10,
+      bugType: 'SqlInjectionRisk',
+      ruleId: 'SQL_PARAM',
+      confidence: 95,
+      baselinePassed: 0,
+      baselineTotal: 2,
+      sandboxPassed: 2,
+      sandboxTotal: 2,
+      linesAdded: 1,
+      linesRemoved: 1,
+      sandboxVerdict: 'verified',
+      verificationStatus: 'RUNTIME_VERIFIED',
+      decision: 'accepted',
+      patchDiff: '- bad\n+ good',
+      developerApproval: {
+        approved: true,
+        approver: 'lead-dev',
+        recordedAt: '2026-11-19T00:00:00.000Z',
+      },
+      summary: 'Parameterized SQL query.',
+    });
+
+    const cleanVerify = await store.verifyChain();
+    assert.equal(cleanVerify.valid, true);
+
+    // Tamper with sandboxPassed (previously unhashed)
+    const origRaw = await fs.readFile(logPath, 'utf-8');
+    await fs.writeFile(logPath, origRaw.replace('"sandboxPassed":2', '"sandboxPassed":99'), 'utf-8');
+    const tamperedVerify = await new AppendOnlyFileAuditStore(logPath).verifyChain();
+    assert.equal(tamperedVerify.valid, false);
+    assert.equal(tamperedVerify.brokenAtIndex, 0);
+
+    // Inject corrupted NDJSON line at end
+    await fs.writeFile(logPath, `${origRaw}{corrupted json line\n`, 'utf-8');
+    const corruptVerify = await new AppendOnlyFileAuditStore(logPath).verifyChain();
+    assert.equal(corruptVerify.valid, false);
+    assert.equal(corruptVerify.brokenAtIndex, 1);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('redactSecrets masks Neo4j URI credentials and rejects invalid GraphRAG parameter types with 400', async () => {
+  const red = redactSecrets('Failed connecting neo4j+s://neo4j:mySecretPass@726bbfa1.databases.neo4j.io using x-api-key=secret_token_99');
+  assert.equal(red.includes('mySecretPass'), false);
+  assert.equal(red.includes('secret_token_99'), false);
+
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'autopatch_http_sec_'));
+  const srv = await startTestServer(path.join(tmpDir, 'audit.ndjson'));
+  try {
+    const badTargetType = await fetch(`${srv.baseUrl}/api/graphrag/impact-analysis`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: 'autopatch-core', targetId: 'fn1', targetType: 'DROP_ALL' }),
+    });
+    assert.equal(badTargetType.status, 400);
+
+    const badDepth = await fetch(`${srv.baseUrl}/api/graphrag/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: 'autopatch-core', question: 'where?', maxDepth: 'deep' }),
+    });
+    assert.equal(badDepth.status, 400);
+  } finally {
+    await srv.close();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+

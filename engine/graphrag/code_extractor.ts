@@ -116,11 +116,22 @@ export function isExcludedRepoPath(relPath: string): boolean {
   return false;
 }
 
+function isPathStrictlyInside(parentRealPath: string, childRealPath: string): boolean {
+  const rel = path.relative(parentRealPath, childRealPath);
+  return Boolean(rel) && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 export async function discoverRepositoryFiles(
   rootDir: string,
   maxFiles = 200
 ): Promise<string[]> {
   const resolvedRoot = path.resolve(rootDir);
+  let realRoot = resolvedRoot;
+  try {
+    realRoot = await fs.realpath(resolvedRoot);
+  } catch {
+    return [];
+  }
   const results: string[] = [];
 
   async function walk(currentDir: string): Promise<void> {
@@ -135,9 +146,20 @@ export async function discoverRepositoryFiles(
 
     for (const entry of entries) {
       if (results.length >= maxFiles) return;
+      // Never follow symlinks so out-of-repo files or secrets cannot be ingested
+      if (entry.isSymbolicLink()) continue;
+
       const fullPath = path.join(currentDir, entry.name);
       const relPath = path.relative(resolvedRoot, fullPath).replace(/\\/g, '/');
       if (isExcludedRepoPath(relPath)) continue;
+
+      let realEntry: string;
+      try {
+        realEntry = await fs.realpath(fullPath);
+      } catch {
+        continue;
+      }
+      if (!isPathStrictlyInside(realRoot, realEntry)) continue;
 
       if (entry.isDirectory()) {
         await walk(fullPath);
@@ -145,8 +167,8 @@ export async function discoverRepositoryFiles(
         const ext = path.extname(entry.name).toLowerCase();
         if (!SUPPORTED_SOURCE_EXTS.has(ext)) continue;
         try {
-          const stat = await fs.stat(fullPath);
-          if (stat.size === 0 || stat.size > 300_000) continue;
+          const stat = await fs.lstat(fullPath);
+          if (stat.isSymbolicLink() || !stat.isFile() || stat.size === 0 || stat.size > 300_000) continue;
           results.push(relPath);
         } catch {
           // ignore unreadable file
@@ -582,10 +604,11 @@ function extractPythonFile(
   const lineCount = content.split('\n').length;
   const sizeBytes = Buffer.byteLength(content, 'utf-8');
 
-  const proc = spawnSync('python3', ['-c', PY_AST_EXTRACTOR_SCRIPT], {
+  const proc = spawnSync('python3', ['-I', '-c', PY_AST_EXTRACTOR_SCRIPT], {
     input: content,
     encoding: 'utf-8',
     timeout: 5000,
+    maxBuffer: 2 * 1024 * 1024,
     env: { PATH: '/usr/local/bin:/usr/bin:/bin', PYTHONDONTWRITEBYTECODE: '1' },
   });
 
@@ -702,10 +725,38 @@ export async function extractSourceFile(
   rootDir: string,
   relPath: string
 ): Promise<ExtractedFileData> {
-  const fullPath = path.join(path.resolve(rootDir), relPath);
-  const content = await fs.readFile(fullPath, 'utf-8');
-  const contentHash = crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
+  if (
+    !relPath ||
+    relPath.includes('\0') ||
+    path.isAbsolute(relPath) ||
+    relPath.split(/[\\/]/).includes('..') ||
+    isExcludedRepoPath(relPath)
+  ) {
+    throw new Error('Disallowed or excluded repository file path.');
+  }
+  const resolvedRoot = path.resolve(rootDir);
+  const realRoot = await fs.realpath(resolvedRoot);
+  const fullPath = path.resolve(resolvedRoot, relPath);
+  if (!isPathStrictlyInside(resolvedRoot, fullPath)) {
+    throw new Error('Path traversal rejected in extractSourceFile.');
+  }
+  const lstat = await fs.lstat(fullPath);
+  if (lstat.isSymbolicLink() || !lstat.isFile()) {
+    throw new Error('Symbolic links and non-regular files are excluded from extraction.');
+  }
+  if (lstat.size === 0 || lstat.size > 300_000) {
+    throw new Error('Source file is empty or exceeds maximum extraction size.');
+  }
+  const realFile = await fs.realpath(fullPath);
+  if (!isPathStrictlyInside(realRoot, realFile)) {
+    throw new Error('Symlink containment check rejected file outside repository root.');
+  }
   const ext = path.extname(relPath).toLowerCase();
+  if (!SUPPORTED_SOURCE_EXTS.has(ext)) {
+    throw new Error('Unsupported source file extension.');
+  }
+  const content = await fs.readFile(realFile, 'utf-8');
+  const contentHash = crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
 
   if (ext === '.py') {
     return extractPythonFile(projectId, relPath, content, contentHash);
